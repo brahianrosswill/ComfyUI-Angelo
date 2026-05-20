@@ -1057,7 +1057,7 @@ function attachAreaPromptBox(node, container) {
     const runBtn = document.createElement("button");
     runBtn.type = "button";
     runBtn.textContent = "Generate Guided Edit";
-    runBtn.style.cssText = "align-self:flex-start; font-size:11px; padding:4px 12px; "
+    runBtn.style.cssText = "align-self:center; font-size:11px; padding:4px 12px; "
         + "border:1px solid #4a7; border-radius:3px; background:rgba(30,120,80,0.95); "
         + "color:#fff; font-weight:bold; cursor:pointer;";
     runBtn.title = "Run the whole-image guided edit using the Location + Area Prompt.";
