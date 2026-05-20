@@ -62,6 +62,10 @@ Restart ComfyUI. No additional Python dependencies.
 
 ## Quick start (FLUX 2 Klein 9B distilled)
 
+**Just want it running?** Drag [`workflows/Klein9b-example.json`](workflows/Klein9b-example.json) onto the ComfyUI canvas — it's a complete FLUX 2 Klein 9B graph (UNet / CLIP / VAE loaders → Angelo → Save Image) wired and ready. Point the loaders at your model files and queue.
+
+To wire it from scratch instead:
+
 1. Add the **Angelo — click to refine** node from the `sampling/Angelo` category.
 2. Wire it up:
    - `model` ← Load Checkpoint / FLUX model loader
