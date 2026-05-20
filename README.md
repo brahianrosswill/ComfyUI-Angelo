@@ -2,6 +2,8 @@
 
 **A click-to-refine sampler for ComfyUI.** Generate an image, then click or paint on regions you want improved. Each click refines just that area while the rest stays bit-exact. One node replaces the standard `KSampler` + post-processing chain. Built and tuned for FLUX 2 Klein 9B distilled (4-step, CFG=1) — but works with any sampler-compatible model.
 
+<a href="https://buymeacoffee.com/lorasandlenses"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
+
 ## What it does in one screen
 
 ```
@@ -259,6 +261,10 @@ The hover ring on the canvas updates live as you press `[` / `]`, so you can siz
 Built by Peter Neill ([shootthesound](https://github.com/shootthesound)).
 
 Bug reports, feature requests, and "this changed how I work" stories all welcome via GitHub issues.
+
+If Angelo saves you time, you can support development here:
+
+<a href="https://buymeacoffee.com/lorasandlenses"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
 
 ## License
 
