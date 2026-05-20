@@ -611,11 +611,12 @@ class AngeloRefine:
                                          "tooltip": "[Sampler Mode] Seed for the base generation. "
                                                     "Controlled by sampler_seed_control after each run."}),
                 "sampler_seed_control": (["fixed", "increment", "decrement", "randomize"],
-                                         {"default": "fixed",
+                                         {"default": "randomize",
                                           "tooltip": "[Sampler Mode] After-generation seed behaviour. "
-                                                     "Auto-forced to 'fixed' when you switch to Edit "
-                                                     "Mode so the cached base stays stable across the "
-                                                     "refine clicks."}),
+                                                     "Defaults to randomize so each base generation gets "
+                                                     "a fresh seed. Auto-forced to 'fixed' (locked to the "
+                                                     "seed that produced the base) when you switch to Edit "
+                                                     "Mode so refine clicks stay stable."}),
 
                 # ===== Edit Mode controls (driven from toolbar) =====
                 # Hidden from the native widget area; the toolbar above the
