@@ -175,6 +175,18 @@ The result: a face that was 64 latent units gets refined at ~1000 latent units (
 
 **Pair with Area Prompt** for a workflow Lightroom users will recognise: paint a region, type "detailed photorealistic face" in the Area Prompt box, click. Same image, that region transformed at full quality with the override prompt.
 
+### When to use Xtra-Fine — and the size floor
+
+**Rule of thumb: if the thing you're improving is small, turn Xtra-Fine ON.** A distant face, an eye, a hand, jewellery, text on a sign — anything that occupies only a small slice of the frame. In plain Refine those pixels map to just a handful of latent cells and the model has no room to render detail; Xtra-Fine crops them out and enlarges them to a full working canvas (the `MP` target, default ~1 MP ≈ 1024²) before refining, then composites back. For large regions plain Refine is already fine and faster.
+
+**Mind the VAE size floor.** The VAE downsamples by **16× on FLUX 2** (8× on FLUX 1 / SDXL / SD 1.5), so the region the model actually works on needs enough latent cells to encode meaningful detail. Practical guidance:
+
+- Aim for the refined region to land at **roughly 512–1024 px on its short edge** after the Xtra-Fine enlarge. On FLUX 2 that's ~32–64 latent cells — enough for coherent detail. The default `MP` ≈ 1024² gets you there for most paints.
+- The enlarge is **capped at `Max` linear scale (default 8× = 64× area)**. So an extremely tiny paint can't be blown up without limit: a ~40 px region maxes out around ~320 px even at 8×, which is near the floor and will look soft. **Paint a little wider** (or raise `Max`) so the crop — and the VAE — have room to work.
+- Below ~256 px effective working size, expect mush: there simply aren't enough latent cells for the model to put detail into, no matter the prompt.
+
+In short: Xtra-Fine is what makes *small* fixes possible at all, but it can't conjure resolution from nothing — give it a crop that enlarges to a few hundred pixels minimum.
+
 ## Persistent Mask (re-roll the same region)
 
 Toggle on, then hit the standard ComfyUI Queue button repeatedly. Each press refines the same masked region with a fresh seed (if `Ctrl=randomize`) or the same seed (if `Ctrl=fixed`).
