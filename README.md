@@ -37,7 +37,7 @@ Angelo collapses that into:
 - **Click** a region. It refines with your main prompt, in place, immediately.
 - **Paint** a freeform stroke with mouse-down + drag. Same thing but custom shape.
 - **Type an Area Prompt** right in the node to refine a region with a different prompt (e.g. main prompt = "person in forest", area prompt = "detailed photorealistic face") — no second CLIP Text Encode node needed.
-- **Toggle Fine Upscale** to refine small regions at much higher effective resolution (the ADetailer move, but with full prompt control).
+- **Toggle Xtra-Fine** to refine small regions at much higher effective resolution (the ADetailer move, but with full prompt control).
 - **Smart Inpaint** — drag a rectangle and add brand-new content with an edit model (FLUX 2 Klein etc.).
 - **Smart Guided Inpaint** — no drawing at all: pick a location from a dropdown ("top left", "center", …) + describe what to add, and the edit model places it.
 - **Toggle Persistent Mask** + press Queue repeatedly to generate variations of the same region.
@@ -104,7 +104,7 @@ The toolbar holds everything — there are no native widget rows. Top to bottom,
   [Steps] [CFG] [Sampler ▾] [Sched ▾]            ← shared generation config (always active)
   [Smpl Seed] [Smpl Ctrl ▾] [Smpl Denoise]       ← base-gen seed (greys in Edit Mode)
  ─────────────────────────────────────────
-  [Reset] [Undo] | [Persistent Mask] [Area Prompt] [Paint Mode] [Fine Upscale] | [Inpaint ▾]
+  [Reset] [Undo] | [Persistent Mask] [Area Prompt] [Paint Mode] [Xtra-Fine] | [Inpaint ▾]
   [Click R] [Feather] [Denoise] [Seed] [Ctrl ▾] | [MP] [Max] [Method ▾]    ← edit block (greys in Sampler Mode)
 ```
 
@@ -127,7 +127,7 @@ The **Mode** switch sits centred up top. Below it, the generation block (always 
 | **Persistent Mask** | Snapshot the current mask. Hit Queue repeatedly to get variations of just that region (combine with `Ctrl=randomize`). Locked OFF in Smart Guided Inpaint (no mask) |
 | **Area Prompt** | Refine with the Area Prompt text typed in the box above the canvas (encoded with the connected `CLIP`) instead of the main prompt. Requires a `CLIP` input + non-empty text. The box only appears when this is ON. Forced ON in both Smart modes |
 | **Paint Mode** | Hold + drag to paint a freeform stroke as the mask, instead of single-circle clicks (Refine only) |
-| **Fine Upscale** | Crop the painted region, upscale via VAE + image upscale, refine at high effective resolution, composite back. ADetailer-style. Forced ON in Smart Inpaint, OFF in Smart Guided Inpaint |
+| **Xtra-Fine** | Crop the painted region, upscale via VAE + image upscale, refine at high effective resolution, composite back. ADetailer-style. Forced ON in Smart Inpaint, OFF in Smart Guided Inpaint |
 | **Inpaint ▾** | `Refine` / `Smart Inpaint` / `Smart Guided Inpaint`. See "Inpainting Mode" below |
 
 ### Edit block — refine values
@@ -138,15 +138,15 @@ The **Mode** switch sits centred up top. Below it, the generation block (always 
 | **Feather** | Pixel-space gaussian feathering on the mask edge for smooth transitions. Defaults to 0 (and is adjustable) in Smart Inpaint; disabled in Smart Guided Inpaint |
 | **Denoise** | How much trajectory to run on the refine (0.3 = subtle, 0.6 = real redo, 0.9+ = regenerate). Locked to 1.0 in both Smart modes |
 | **Seed** + **Ctrl ▾** | Seed for the refine pass + after-generate control. Defaults to `randomize` so each refine is a fresh variation |
-| **MP** | (Fine Upscale only) Target megapixels for the refine pass |
-| **Max** | (Fine Upscale only) Hard cap on linear upscale factor (8× linear = 64× area) |
-| **Method ▾** | (Fine Upscale only) Pixel-space upscale method. Default lanczos. |
+| **MP** | (Xtra-Fine only) Target megapixels for the refine pass |
+| **Max** | (Xtra-Fine only) Hard cap on linear upscale factor (8× linear = 64× area) |
+| **Method ▾** | (Xtra-Fine only) Pixel-space upscale method. Default lanczos. |
 
-## Fine Upscale (the killer feature)
+## Xtra-Fine (the killer feature)
 
 Standard refine runs the model on the full latent. The mask only decides where output is written; the model sees the whole image as context. That's great for general refinement but it means a small region (a face, a hand) is only ~64 latent units wide — well below where FLUX renders detail well.
 
-Fine Upscale does what ADetailer does, but inside the same Angelo loop:
+Xtra-Fine does what ADetailer does, but inside the same Angelo loop:
 
 1. Compute the painted-mask bbox + a context-padding band of surrounding pixels for context.
 2. VAE-decode the cached latent to pixels.
@@ -180,8 +180,8 @@ Three options for how a region is treated. The two Smart modes need an **edit mo
 | Mode | What it does | Use for |
 |---|---|---|
 | **Refine** (default) | Painted/clicked region is the starting state — the model partially denoises the existing pixels per the denoise level. Mask is a click circle or a paint stroke. | Face/hand fixes, polish, style adjustments, **editing what's already there** |
-| **Smart Inpaint** | Drag a rectangle (click + hold one corner, release at the opposite). Locks `denoise=1.0`, `Fine Upscale=ON`, `Area Prompt=ON`. Injects `reference_latents` so an edit model's edit branch activates, then zeros the masked latent so the region regenerates from full noise. | **Adding new content** in a specific drawn region |
-| **Smart Guided Inpaint** | No painting or boxes. Pick a **location** from a dropdown ("Top left", "Center", "Bottom half", …); it's prepended to your Area Prompt at run time (e.g. *"In the top left of the image, a red car"*) and the edit model places it across the whole image. Locks `denoise=1.0`, `Fine Upscale=OFF`, `Area Prompt=ON`; press **Generate Guided Edit** to run. | **Adding new content** when you don't want to draw — quick, coarse placement |
+| **Smart Inpaint** | Drag a rectangle (click + hold one corner, release at the opposite). Locks `denoise=1.0`, `Xtra-Fine=ON`, `Area Prompt=ON`. Injects `reference_latents` so an edit model's edit branch activates, then zeros the masked latent so the region regenerates from full noise. | **Adding new content** in a specific drawn region |
+| **Smart Guided Inpaint** | No painting or boxes. Pick a **location** from a dropdown ("Top left", "Center", "Bottom half", …); it's prepended to your Area Prompt at run time (e.g. *"In the top left of the image, a red car"*) and the edit model places it across the whole image. Locks `denoise=1.0`, `Xtra-Fine=OFF`, `Area Prompt=ON`; press **Generate Guided Edit** to run. | **Adding new content** when you don't want to draw — quick, coarse placement |
 
 ### Why Smart Inpaint exists
 
@@ -189,7 +189,7 @@ An edit model like FLUX 2 Klein has no concept of a mask — it takes a referenc
 
 Typical "add a person on the road" workflow:
 
-1. **Inpaint Mode: Smart Inpaint** (auto-locks denoise=1.0 / Fine Upscale=ON / Area Prompt=ON)
+1. **Inpaint Mode: Smart Inpaint** (auto-locks denoise=1.0 / Xtra-Fine=ON / Area Prompt=ON)
 2. **Drag a rectangle** roughly where the person should go — make it generously larger than the subject so the body isn't clipped at the rectangle edge
 3. Type the **Area Prompt** (the box appears above the canvas): `"a person walking, full body, realistic, matching the scene's lighting"`
 4. **Queue**
@@ -247,7 +247,7 @@ The hover ring on the canvas updates live as you press `[` / `]`, so you can siz
 
 ## Tips
 
-- **Default denoise (0.5) is for in-place touch-ups.** Bump to 0.85+ when you want a clear redo of the region (mandatory for Area Prompt; helpful for Fine Upscale). Both Smart modes lock it to 1.0.
+- **Default denoise (0.5) is for in-place touch-ups.** Bump to 0.85+ when you want a clear redo of the region (mandatory for Area Prompt; helpful for Xtra-Fine). Both Smart modes lock it to 1.0.
 - **Click R + Feather scaling.** Feather ≈ `Click R / 4` works well as a starting point.
 - **The preview always fits the node** (until you zoom). Resize the node and the image scales to fit (letterboxed), so a portrait image no longer forces a giant tall node. Wheel-zoom + middle-drag to inspect detail — see "Navigating the preview".
 - **Lanczos is the default for Method.** For smooth content (faces, skin), try bilinear too — sometimes preferable on very soft subjects.
@@ -258,7 +258,7 @@ The hover ring on the canvas updates live as you press `[` / `]`, so you can siz
 ## Honest limits
 
 - **In-process state.** Refinements live in the running ComfyUI process. Restart = cache cleared. Workflow JSON saves widget values but not the cached refined latent.
-- **VAE round-trip cost in Fine Upscale.** ~1.5-2 seconds per click on a 5090 for FLUX 2 Klein. Trade-off for the resolution boost; OFF mode stays fast.
+- **VAE round-trip cost in Xtra-Fine.** ~1.5-2 seconds per click on a 5090 for FLUX 2 Klein. Trade-off for the resolution boost; OFF mode stays fast.
 - **Crop+upscale is bounded by the model's training distribution.** Very small painted regions even at 8× upscale won't suddenly look like trained-resolution content. Paint wider so the crop carries more surrounding context.
 - **One Angelo node per ComfyUI instance is sensible.** Multiple parallel Angelo nodes would share the global queue hook and may interact in surprising ways under Persistent Mask.
 - **No multi-user safety.** Don't use this on a shared ComfyUI server expecting per-user state isolation.

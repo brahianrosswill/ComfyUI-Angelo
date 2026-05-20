@@ -398,13 +398,13 @@ function attachPreviewCanvas(node) {
     row1.appendChild(paintModeToggle);
     node._AngeloPaintModeToggle = paintModeToggle;
 
-    const fineUpscaleToggle = makeToggleButton("Fine Upscale", () => {
+    const fineUpscaleToggle = makeToggleButton("Xtra-Fine", () => {
         const w = findWidget(node, "fine_upscaling");
         if (!w) return;
         setWidget(w, !w.value);
         syncFineUpscaleToggle(node);
     });
-    fineUpscaleToggle.title = "When ON, the painted region is cropped from the latent, VAE-decoded, upscaled in pixel space to hit MP target, re-encoded, refined, and composited back. Gives the model effective higher resolution on small regions. Capped at Max linear scale.";
+    fineUpscaleToggle.title = "Xtra-Fine — refine the painted region at much higher effective resolution (ADetailer-style). The region is cropped, enlarged in pixel space to the MP target, re-encoded, refined, and composited back, so the model has room to render fine detail (faces, hands, eyes). Capped at Max scale.\n\nTip: pair it with Area Prompt — describe exactly what that region should be (e.g. \"detailed photorealistic face, sharp eyes\") for the strongest result.";
     row1.appendChild(fineUpscaleToggle);
     node._AngeloFineUpscaleToggle = fineUpscaleToggle;
 
@@ -444,8 +444,8 @@ function attachPreviewCanvas(node) {
     );
     inpaintModeSelect.title = "Inpainting Mode.\n\n"
         + "Refine — paint/click on the canvas to refine an existing region (faces, hands, textures). Partial-denoise from existing content.\n\n"
-        + "Smart Inpaint — drag a rectangle on the canvas (click and hold one corner, release at the opposite). Adds NEW content in that region. Locks denoise=1.0 + Fine Upscale=ON + Area Prompt=ON; injects reference_latents so an edit model's (FLUX 2 Klein 9B etc.) edit branch activates. Feather defaults to 0 but stays adjustable.\n\n"
-        + "Smart Guided Inpaint — no painting or boxes. Pick a LOCATION from the dropdown above the Area Prompt (top left, center, bottom half, …); it's prepended to your prompt at run time (e.g. 'In the top left of the image, a red car') and the edit model places the content there across the whole image. Locks denoise=1.0 + Fine Upscale=OFF + Area Prompt=ON; Feather and Persistent Mask disabled (no mask). Press 'Generate Guided Edit' to run. Coarse regions land most reliably.";
+        + "Smart Inpaint — drag a rectangle on the canvas (click and hold one corner, release at the opposite). Adds NEW content in that region. Locks denoise=1.0 + Xtra-Fine=ON + Area Prompt=ON; injects reference_latents so an edit model's (FLUX 2 Klein 9B etc.) edit branch activates. Feather defaults to 0 but stays adjustable.\n\n"
+        + "Smart Guided Inpaint — no painting or boxes. Pick a LOCATION from the dropdown above the Area Prompt (top left, center, bottom half, …); it's prepended to your prompt at run time (e.g. 'In the top left of the image, a red car') and the edit model places the content there across the whole image. Locks denoise=1.0 + Xtra-Fine=OFF + Area Prompt=ON; Feather and Persistent Mask disabled (no mask). Press 'Generate Guided Edit' to run. Coarse regions land most reliably.";
     row1.appendChild(inpaintModeSelect);
     node._AngeloInpaintModeSelect = inpaintModeSelect;
 
@@ -505,7 +505,7 @@ function attachPreviewCanvas(node) {
         if (!w) return;
         setWidget(w, val);
     });
-    mpInput.title = "Fine Upscale: target megapixels for the refine pass. Higher = bigger compute per click but sharper detail. Only used when Fine Upscale is ON.";
+    mpInput.title = "Xtra-Fine: target megapixels for the refine pass. Higher = bigger compute per click but sharper detail. Only used when Xtra-Fine is ON.";
     row2.appendChild(mpInput);
     node._AngeloMpInput = mpInput;
 
@@ -514,7 +514,7 @@ function attachPreviewCanvas(node) {
         if (!w) return;
         setWidget(w, val);
     });
-    maxInput.title = "Fine Upscale: hard cap on linear upscale factor (8× = 64× area). Prevents pathological blow-up on tiny paints. Only used when Fine Upscale is ON.";
+    maxInput.title = "Xtra-Fine: hard cap on linear enlarge factor (8× = 64× area). Prevents pathological blow-up on tiny paints. Only used when Xtra-Fine is ON.";
     row2.appendChild(maxInput);
     node._AngeloMaxInput = maxInput;
 
@@ -538,7 +538,7 @@ function attachPreviewCanvas(node) {
             setWidget(w, val);
         }
     );
-    methodSelect.title = "Fine Upscale: pixel-space upscale method. lanczos = sharpest with mild ringing; bilinear = smooth (great for skin/faces); bicubic = middle; nearest-exact = blocky preserves exact values; bislerp/area = niche. Only used when Fine Upscale is ON.";
+    methodSelect.title = "Xtra-Fine: pixel-space enlarge method. lanczos = sharpest with mild ringing; bilinear = smooth (great for skin/faces); bicubic = middle; nearest-exact = blocky preserves exact values; bislerp/area = niche. Only used when Xtra-Fine is ON.";
     row2.appendChild(methodSelect);
     node._AngeloMethodSelect = methodSelect;
 
