@@ -4,6 +4,8 @@
 
 <a href="https://buymeacoffee.com/lorasandlenses"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
 
+![Angelo in Edit Mode](screenshots/toolbar-edit-mode.png)
+
 ## What it does in one screen
 
 ```
@@ -27,6 +29,8 @@
 ```
 
 That's the entire workflow. No KSampler upstream, no ADetailer downstream, no Image-to-Mask plumbing in between. Generate, click, done. The image always scales to fit the node — resize the node and the preview tracks it.
+
+![Angelo wired into a graph](screenshots/workflow-overview.png)
 
 ## Why you'd want it
 
@@ -84,6 +88,8 @@ Angelo acts as a normal sampler — generates the base image from the incoming l
 
 When you flip Mode to Edit Mode, `Smpl Ctrl` auto-locks to `fixed` and `Smpl Seed` snaps to the seed that actually produced the cached image (preserves it across the mode switch). The Sampler-seed row greys out in Edit Mode.
 
+![Mode dropdown](screenshots/mode-dropdown.png)
+
 ### Edit Mode
 
 The refine control rows come alive. Click, paint, or drag on the preview to refine, depending on the Inpaint mode.
@@ -92,6 +98,10 @@ Cursor changes by mode:
 - **Crosshair** = single-click refine (Refine) or rectangle drag (Smart Inpaint)
 - **Cell** = paint mode active (drag to draw a freeform stroke, Refine only)
 - **Default arrow** = Smart Guided Inpaint (no canvas interaction — driven by the location dropdown + Generate button)
+
+Paint Mode lets you brush a freeform region to refine instead of single-circle clicks:
+
+![Paint Mode — freeform brushed region](screenshots/paint-mode.png)
 
 ## Toolbar
 
@@ -177,6 +187,8 @@ A new click while Persistent Mask is on commits a new region — the post-click 
 
 Three options for how a region is treated. The two Smart modes need an **edit model** (FLUX 2 Klein 9B etc.) and a wired `CLIP`.
 
+![Inpaint mode dropdown](screenshots/inpaint-modes.png)
+
 | Mode | What it does | Use for |
 |---|---|---|
 | **Refine** (default) | Painted/clicked region is the starting state — the model partially denoises the existing pixels per the denoise level. Mask is a click circle or a paint stroke. | Face/hand fixes, polish, style adjustments, **editing what's already there** |
@@ -196,6 +208,13 @@ Typical "add a person on the road" workflow:
 
 Rectangles beat tight silhouettes here: the composite keeps only what lands inside your shape, so a person-shaped mask clips any body part the model drew outside it. A generous rectangle gives the model room to compose a complete subject.
 
+Example — drag a rectangle over the wheel, prompt `"wheel engulfed in flames"`, run:
+
+<table>
+<tr><td align="center"><b>Before</b> (rectangle + prompt)</td><td align="center"><b>After</b></td></tr>
+<tr><td><img src="screenshots/smart-inpaint-before.png" width="400" alt="Smart Inpaint before"></td><td><img src="screenshots/smart-inpaint-after.png" width="400" alt="Smart Inpaint after"></td></tr>
+</table>
+
 ### Smart Guided Inpaint — placement by words, not boxes
 
 The same edit-model plumbing as Smart Inpaint, but the spatial "where" comes from a dropdown + prompt phrasing instead of a drawn region. There's no mask at all — the whole image is edited, with `reference_latents` keeping the rest faithful and the location prefix telling the model where to put the new content.
@@ -205,9 +224,25 @@ The same edit-model plumbing as Smart Inpaint, but the spatial "where" comes fro
 3. Type what to add in the **Area Prompt** box
 4. Press **Generate Guided Edit**
 
+Example — Location `Right edge`, prompt `"A sheep jumping up and down"`, hit Generate Guided Edit:
+
+<table>
+<tr><td align="center"><b>Before</b> (location + prompt)</td><td align="center"><b>After</b></td></tr>
+<tr><td><img src="screenshots/smart-guided-before.png" width="400" alt="Smart Guided before"></td><td><img src="screenshots/smart-guided-after.png" width="400" alt="Smart Guided after"></td></tr>
+</table>
+
 Honest expectations: text-based placement is fuzzy by nature. Coarse regions ("top half", "bottom of the image", "center") land most reliably; fine ones are looser. FLUX 2 Klein honors these phrases well in practice. Use Smart Inpaint when you need *precise* placement, Smart Guided when you want a *quick, no-draw* edit.
 
 **Insert Smart Phrasing** (a button under the Area Prompt box, shown in both Smart modes) opens a popup of edit-preservation constraints — *keep the lighting / pose / clothes / faces the same* — and appends the ticked ones to your Area Prompt. Handy for keeping the rest of the subject stable while changing one thing.
+
+<table>
+<tr><td align="center"><b>Tick the constraints</b></td><td align="center"><b>Appended to the Area Prompt</b></td></tr>
+<tr><td><img src="screenshots/smart-phrasing-popup.png" width="400" alt="Insert Smart Phrasing popup"></td><td><img src="screenshots/smart-phrasing-applied.png" width="400" alt="Smart Phrasing appended to prompt"></td></tr>
+</table>
+
+…and the run (Location `Left edge`, *"a magical glowing whole in the ground, Keep the lighting the same"*) puts the glow on the left while leaving the rest of the scene intact:
+
+![Smart Guided Inpaint — glow placed on the left edge](screenshots/smart-guided-left-edge.png)
 
 ## Area Prompt (refine with a different prompt)
 
