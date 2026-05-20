@@ -219,6 +219,20 @@ Both Smart modes force Area Prompt ON (it's the whole point there), and add an *
 
 Recommended: use `denoise=0.7-0.9` for area-prompt refines in **Refine** mode. Lower values won't give the new prompt room to take effect against an image generated with a different prompt. (Both Smart modes lock denoise=1.0 since they're regenerating from scratch.)
 
+## Navigating the preview (zoom & pan)
+
+The preview fits the node by default, but you can zoom in to work on fine detail:
+
+| Action | Does |
+|---|---|
+| **Mouse wheel** | Zoom in / out, centered on the cursor (0.25×–8×) |
+| **Middle-mouse hold + drag** | Pan around |
+| **Double middle-click** | Reset back to fit |
+
+When you zoom in (>1×), a small **minimap** appears in the bottom-right corner showing the whole image with a marker for your current viewport. Click-to-refine, paint, and rectangle-drag all keep working while zoomed — clicks land on the correct image pixel at any zoom — so you can zoom into a face, click to refine, and stay zoomed for the next click.
+
+While you're zoomed or panned, the **auto-fit is suspended** so resizing the node won't snap your view back. A genuinely new image (or double-click reset) returns to fit; refining the *same* image keeps your zoom.
+
 ## Keyboard shortcuts
 
 When the cursor is hovering the preview canvas AND you're in Edit Mode, these keys adjust the matching toolbar values directly:
@@ -235,7 +249,7 @@ The hover ring on the canvas updates live as you press `[` / `]`, so you can siz
 
 - **Default denoise (0.5) is for in-place touch-ups.** Bump to 0.85+ when you want a clear redo of the region (mandatory for Area Prompt; helpful for Fine Upscale). Both Smart modes lock it to 1.0.
 - **Click R + Feather scaling.** Feather ≈ `Click R / 4` works well as a starting point.
-- **The preview always fits the node.** Resize the node and the image scales to fit (letterboxed), so a portrait image no longer forces a giant tall node. Drag the node bigger to inspect detail.
+- **The preview always fits the node** (until you zoom). Resize the node and the image scales to fit (letterboxed), so a portrait image no longer forces a giant tall node. Wheel-zoom + middle-drag to inspect detail — see "Navigating the preview".
 - **Lanczos is the default for Method.** For smooth content (faces, skin), try bilinear too — sometimes preferable on very soft subjects.
 - **The refine controls grey out in Sampler Mode** (and the base-gen seed row greys in Edit Mode) so you can see at a glance which mode you're in.
 - **Lock-on-fixed seed semantics.** Switching to `fixed` always also restores the seed widget to the value Python actually used at the last run — so "fixed" always means "the seed that produced the current canvas".
