@@ -669,12 +669,15 @@ function attachPreviewCanvas(node) {
     canvasWrap.style.justifyContent = "center";
     canvasWrap.style.overflow = "hidden";
 
+    // The canvas is ABSOLUTELY positioned inside the wrap — applyView()
+    // sets its width/height (= fit size × zoom) and left/top (centre +
+    // pan). This lets zoom>1 overflow the wrap (clipped by overflow:
+    // hidden) while click/paint/overlay mapping stays correct, because
+    // they all read canvas.getBoundingClientRect() which reflects the
+    // live size+position. No max-width/height (would block zoom>1).
     const canvas = document.createElement("canvas");
     canvas.style.display = "block";
-    // Display size is set in px by fitCanvasDisplaySize; max-* are a
-    // belt-and-suspenders cap so it never overflows before the first fit.
-    canvas.style.maxWidth = "100%";
-    canvas.style.maxHeight = "100%";
+    canvas.style.position = "absolute";
     canvas.style.cursor = "crosshair";
     canvas.width = 512;
     canvas.height = 512;
@@ -696,7 +699,111 @@ function attachPreviewCanvas(node) {
     placeholder.style.fontSize = "12px";
     canvasWrap.appendChild(placeholder);
 
+    // Corner minimap navigator — shown only when zoomed in (zoom > 1).
+    const minimap = document.createElement("canvas");
+    minimap.style.position = "absolute";
+    minimap.style.right = "6px";
+    minimap.style.bottom = "6px";
+    minimap.style.border = "1px solid rgba(255,255,255,0.35)";
+    minimap.style.borderRadius = "2px";
+    minimap.style.background = "rgba(0,0,0,0.4)";
+    minimap.style.pointerEvents = "none";
+    minimap.style.display = "none";
+    minimap.style.zIndex = "5";
+    canvasWrap.appendChild(minimap);
+    node._AngeloMinimap = minimap;
+
+    // Per-node view state (zoom/pan). zoom 1 = fit; pan in CSS px.
+    node._AngeloZoom = 1;
+    node._AngeloPanX = 0;
+    node._AngeloPanY = 0;
+    node._AngeloBaseW = 0;
+    node._AngeloBaseH = 0;
+
     container.appendChild(canvasWrap);
+
+    // --- Zoom / pan (view layer, independent of the refine pipeline) ---
+    //   • Wheel       → zoom toward the cursor (clamped 0.25–8×).
+    //   • Middle-drag → pan.
+    //   • Double-middle-click → reset to fit.
+    // While zoomed/panned the auto-fit (fitCanvasDisplaySize) is suppressed
+    // so it never stomps the manual view; reset / new image restore fit.
+
+    canvasWrap.addEventListener("wheel", (event) => {
+        if (!node._AngeloImg || !node._AngeloBaseW) return;
+        event.preventDefault();
+        event.stopPropagation();   // don't also zoom the ComfyUI graph
+        const wrapW = canvasWrap.clientWidth, wrapH = canvasWrap.clientHeight;
+        const wrapRect = canvasWrap.getBoundingClientRect();
+        const cx = event.clientX - wrapRect.left;
+        const cy = event.clientY - wrapRect.top;
+        const oldZoom = node._AngeloZoom || 1;
+        const factor = event.deltaY < 0 ? 1.15 : (1 / 1.15);
+        const newZoom = Math.max(0.25, Math.min(8, oldZoom * factor));
+        if (newZoom === oldZoom) return;
+        const baseW = node._AngeloBaseW, baseH = node._AngeloBaseH;
+        const oldW = baseW * oldZoom, oldH = baseH * oldZoom;
+        const oldLeft = (wrapW - oldW) / 2 + (node._AngeloPanX || 0);
+        const oldTop = (wrapH - oldH) / 2 + (node._AngeloPanY || 0);
+        // Normalised image point currently under the cursor.
+        const nx = (cx - oldLeft) / oldW;
+        const ny = (cy - oldTop) / oldH;
+        const newW = baseW * newZoom, newH = baseH * newZoom;
+        // Solve pan so that same normalised point stays under the cursor.
+        node._AngeloZoom = newZoom;
+        node._AngeloPanX = cx - nx * newW - (wrapW - newW) / 2;
+        node._AngeloPanY = cy - ny * newH - (wrapH - newH) / 2;
+        applyView(node);
+        redrawCanvasWithOverlays(node);
+    }, { passive: false });
+
+    // Suppress the Windows middle-click autoscroll cursor.
+    canvasWrap.addEventListener("mousedown", (event) => {
+        if (event.button === 1) event.preventDefault();
+    });
+
+    canvasWrap.addEventListener("pointerdown", (event) => {
+        if (event.button !== 1) return;   // middle button = pan / reset
+        event.preventDefault();
+        event.stopPropagation();   // don't let litegraph treat it as a node drag
+        const now = performance.now();
+        if (node._AngeloLastMiddleDown && (now - node._AngeloLastMiddleDown) < 350) {
+            // Double middle-click → reset to fit.
+            node._AngeloLastMiddleDown = 0;
+            node._AngeloPanning = null;
+            resetView(node);
+            redrawCanvasWithOverlays(node);
+            return;
+        }
+        node._AngeloLastMiddleDown = now;
+        try { canvasWrap.setPointerCapture(event.pointerId); } catch (e) { /* noop */ }
+        node._AngeloPanning = {
+            startX: event.clientX, startY: event.clientY,
+            startPanX: node._AngeloPanX || 0, startPanY: node._AngeloPanY || 0,
+            pointerId: event.pointerId,
+        };
+        if (node._AngeloCanvas) node._AngeloCanvas.style.cursor = "grabbing";
+    });
+
+    canvasWrap.addEventListener("pointermove", (event) => {
+        const p = node._AngeloPanning;
+        if (!p) return;
+        node._AngeloPanX = p.startPanX + (event.clientX - p.startX);
+        node._AngeloPanY = p.startPanY + (event.clientY - p.startY);
+        applyView(node);
+    });
+
+    function endAngeloPan() {
+        const p = node._AngeloPanning;
+        if (!p) return;
+        node._AngeloPanning = null;
+        try { canvasWrap.releasePointerCapture(p.pointerId); } catch (e) { /* noop */ }
+        redrawCanvasWithOverlays(node);   // restores the mode-appropriate cursor
+    }
+    canvasWrap.addEventListener("pointerup", (event) => {
+        if (event.button === 1) endAngeloPan();
+    });
+    canvasWrap.addEventListener("pointercancel", endAngeloPan);
 
     // --- Pointer events (instead of mouse*) + pointer capture so long
     //     drags don't get cancelled when the cursor leaves the canvas
@@ -916,13 +1023,21 @@ function attachPreviewCanvas(node) {
     dbg("attached preview canvas to node", node.id);
 }
 
-// Compute and apply the canvas DISPLAY size (CSS px) so the image fits
-// entirely within its wrap while preserving aspect ratio — scaling both
-// up and down. The canvas bitmap stays at the image's native resolution;
-// only the CSS box scales, so click mapping (via getBoundingClientRect)
-// and overlay drawing stay correct. The wrap centres the result, so any
-// leftover space becomes letterbox margin.
+function _angeloIsZoomed(node) {
+    return (node._AngeloZoom || 1) !== 1
+        || (node._AngeloPanX || 0) !== 0
+        || (node._AngeloPanY || 0) !== 0;
+}
+
+// Compute the BASE (fit) display size: the canvas size at zoom=1, fitting
+// the wrap while preserving aspect ratio. Stored as _AngeloBaseW/H; the
+// live size is base × zoom, applied by applyView().
+//
+// IMPORTANT: when the user has zoomed/panned (zoom != 1 or pan != 0), this
+// is a NO-OP — the auto-fit must not stomp on a manual zoom. The view only
+// re-fits at the neutral state (e.g. after resetView or a new image).
 function fitCanvasDisplaySize(node) {
+    if (_angeloIsZoomed(node)) return;   // never auto-fit while zoomed/panned
     const canvas = node._AngeloCanvas;
     const wrap = node._AngeloCanvasWrap;
     if (!canvas || !wrap) return;
@@ -934,8 +1049,85 @@ function fitCanvasDisplaySize(node) {
     const natH = (img && img.naturalHeight) ? img.naturalHeight : canvas.height;
     if (natW <= 0 || natH <= 0) return;
     const scale = Math.min(availW / natW, availH / natH);
-    canvas.style.width = Math.max(1, Math.floor(natW * scale)) + "px";
-    canvas.style.height = Math.max(1, Math.floor(natH * scale)) + "px";
+    node._AngeloBaseW = Math.max(1, Math.floor(natW * scale));
+    node._AngeloBaseH = Math.max(1, Math.floor(natH * scale));
+    applyView(node);
+}
+
+// Apply the current zoom/pan: size + position the absolutely-placed
+// canvas. Display size = base × zoom; positioned centred in the wrap with
+// the pan offset added. Then refresh the minimap.
+function applyView(node) {
+    const canvas = node._AngeloCanvas;
+    const wrap = node._AngeloCanvasWrap;
+    if (!canvas || !wrap) return;
+    const baseW = node._AngeloBaseW, baseH = node._AngeloBaseH;
+    if (!baseW || !baseH) return;
+    const z = node._AngeloZoom || 1;
+    const dispW = baseW * z, dispH = baseH * z;
+    const wrapW = wrap.clientWidth, wrapH = wrap.clientHeight;
+    const left = (wrapW - dispW) / 2 + (node._AngeloPanX || 0);
+    const top = (wrapH - dispH) / 2 + (node._AngeloPanY || 0);
+    canvas.style.width = dispW + "px";
+    canvas.style.height = dispH + "px";
+    canvas.style.left = left + "px";
+    canvas.style.top = top + "px";
+    updateMinimap(node);
+}
+
+// Reset to the neutral fit view (zoom=1, no pan) and re-fit to the node.
+function resetView(node) {
+    node._AngeloZoom = 1;
+    node._AngeloPanX = 0;
+    node._AngeloPanY = 0;
+    fitCanvasDisplaySize(node);  // recomputes base + applyView (now neutral)
+}
+
+// Draw the corner minimap: full-image thumbnail + a rectangle marking the
+// currently-visible viewport. Shown only when zoomed in (zoom > 1).
+function updateMinimap(node) {
+    const mm = node._AngeloMinimap;
+    const wrap = node._AngeloCanvasWrap;
+    const img = node._AngeloImg;
+    if (!mm || !wrap) return;
+    const z = node._AngeloZoom || 1;
+    if (z <= 1 || !img || !img.naturalWidth) {
+        mm.style.display = "none";
+        return;
+    }
+    // Thumbnail size: cap the long edge at 140 px, preserve aspect.
+    const natW = img.naturalWidth, natH = img.naturalHeight;
+    const cap = 140;
+    const mmScale = Math.min(cap / natW, cap / natH);
+    const mmW = Math.max(1, Math.round(natW * mmScale));
+    const mmH = Math.max(1, Math.round(natH * mmScale));
+    if (mm.width !== mmW) mm.width = mmW;
+    if (mm.height !== mmH) mm.height = mmH;
+    mm.style.width = mmW + "px";
+    mm.style.height = mmH + "px";
+    mm.style.display = "block";
+
+    const ctx = mm.getContext("2d");
+    ctx.clearRect(0, 0, mmW, mmH);
+    ctx.drawImage(img, 0, 0, mmW, mmH);
+
+    // Visible image region (normalised 0..1) = which part of the canvas
+    // currently lands inside the wrap viewport.
+    const baseW = node._AngeloBaseW, baseH = node._AngeloBaseH;
+    const dispW = baseW * z, dispH = baseH * z;
+    const wrapW = wrap.clientWidth, wrapH = wrap.clientHeight;
+    const left = (wrapW - dispW) / 2 + (node._AngeloPanX || 0);
+    const top = (wrapH - dispH) / 2 + (node._AngeloPanY || 0);
+    const vx0 = Math.max(0, Math.min(1, (0 - left) / dispW));
+    const vy0 = Math.max(0, Math.min(1, (0 - top) / dispH));
+    const vx1 = Math.max(0, Math.min(1, (wrapW - left) / dispW));
+    const vy1 = Math.max(0, Math.min(1, (wrapH - top) / dispH));
+
+    ctx.strokeStyle = "rgba(255, 220, 80, 0.95)";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(vx0 * mmW, vy0 * mmH, (vx1 - vx0) * mmW, (vy1 - vy0) * mmH);
+    ctx.fillStyle = "rgba(255, 220, 80, 0.12)";
+    ctx.fillRect(vx0 * mmW, vy0 * mmH, (vx1 - vx0) * mmW, (vy1 - vy0) * mmH);
 }
 
 // Area Prompt box: a single textarea below the canvas plus a Pos/Neg
@@ -1246,6 +1438,10 @@ function loadIntoCanvas(node, url) {
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
+        const prev = node._AngeloImg;
+        const sameDims = prev
+            && prev.naturalWidth === img.naturalWidth
+            && prev.naturalHeight === img.naturalHeight;
         node._AngeloImg = img;
         canvas.width = img.naturalWidth;
         canvas.height = img.naturalHeight;
@@ -1261,8 +1457,15 @@ function loadIntoCanvas(node, url) {
         if (wi) setWidget(wi, img.naturalWidth);
         if (hi) setWidget(hi, img.naturalHeight);
 
-        // Re-fit the canvas display size to the new image's aspect ratio.
-        fitCanvasDisplaySize(node);
+        // If this is a refine of the SAME image (same dims) and the user
+        // is zoomed in, keep their view — so clicking to refine a detail
+        // doesn't pop them back to fit. A genuinely new image (different
+        // dims) or the first load resets to fit.
+        if (sameDims && _angeloIsZoomed(node)) {
+            applyView(node);
+        } else {
+            resetView(node);
+        }
 
         // Force a node redraw so LiteGraph re-computes the canvas widget size.
         if (node.graph && node.graph.setDirtyCanvas) {
