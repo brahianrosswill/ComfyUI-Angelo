@@ -741,6 +741,15 @@ function attachPreviewCanvas(node) {
         const factor = event.deltaY < 0 ? 1.15 : (1 / 1.15);
         const newZoom = Math.max(0.25, Math.min(8, oldZoom * factor));
         if (newZoom === oldZoom) return;
+        // Wheeling back through ~1× snaps to a clean fit (zoom=1, no pan).
+        // Without this, float drift leaves zoom at e.g. 1.0000002, which
+        // keeps the minimap up and the auto-fit suppressed at what looks
+        // like fit.
+        if (Math.abs(newZoom - 1) < 0.01) {
+            resetView(node);
+            redrawCanvasWithOverlays(node);
+            return;
+        }
         const baseW = node._AngeloBaseW, baseH = node._AngeloBaseH;
         const oldW = baseW * oldZoom, oldH = baseH * oldZoom;
         const oldLeft = (wrapW - oldW) / 2 + (node._AngeloPanX || 0);
@@ -1024,7 +1033,8 @@ function attachPreviewCanvas(node) {
 }
 
 function _angeloIsZoomed(node) {
-    return (node._AngeloZoom || 1) !== 1
+    // Epsilon so float drift near 1.0 doesn't read as "zoomed".
+    return Math.abs((node._AngeloZoom || 1) - 1) > 1e-3
         || (node._AngeloPanX || 0) !== 0
         || (node._AngeloPanY || 0) !== 0;
 }
@@ -1091,7 +1101,8 @@ function updateMinimap(node) {
     const img = node._AngeloImg;
     if (!mm || !wrap) return;
     const z = node._AngeloZoom || 1;
-    if (z <= 1 || !img || !img.naturalWidth) {
+    // Epsilon so a near-1.0 (drifted) zoom doesn't flash the minimap.
+    if (z <= 1.001 || !img || !img.naturalWidth) {
         mm.style.display = "none";
         return;
     }
