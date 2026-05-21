@@ -87,10 +87,11 @@ def _ensure_model():
             from sam3.model.sam3_image_processor import Sam3Processor
         except Exception as e:  # pragma: no cover - environment dependent
             _STATE["import_error"] = (
-                "SAM 3 is not available: failed to import the `sam3` package. "
-                "Install it (pip install sam3 / the Meta SAM 3 release) and "
-                "make sure models/sam3/sam3.pt exists.\n"
-                f"Import error: {e}"
+                "SAM 3 Detect isn't installed (it's optional). Run the "
+                "installer in the ComfyUI-Angelo folder — "
+                "install_sam3_support.bat (Windows) or install_sam3_support.sh "
+                "(macOS/Linux) — then restart ComfyUI. "
+                f"(sam3 package not importable: {e})"
             )
             raise RuntimeError(_STATE["import_error"])
 

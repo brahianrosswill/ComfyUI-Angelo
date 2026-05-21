@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Angelo — install the OPTIONAL SAM 3 "Detect" feature (macOS / Linux).
+#
+# Angelo's core needs no extra dependencies; this is only for the SAM 3
+# text-segmentation Detect button. Run it with your ComfyUI Python
+# environment active, or set PYTHON to your ComfyUI python:
+#     PYTHON=/path/to/ComfyUI/venv/bin/python ./install_sam3_support.sh
+set -e
+cd "$(dirname "$0")"
+
+PY="${PYTHON:-python}"
+echo "Angelo SAM 3 installer — using Python: $PY"
+"$PY" --version || { echo "Python not found. Set PYTHON to your ComfyUI python and retry."; exit 1; }
+
+if "$PY" -c "import sam3" >/dev/null 2>&1; then
+  echo "SAM 3 is already installed in this environment — nothing to do."
+  echo "Restart ComfyUI and use the Detect button in Angelo."
+  exit 0
+fi
+
+echo "Installing SAM 3 runtime dependencies..."
+"$PY" -m pip install -r sam3_requirements.txt
+
+if [ ! -d sam3 ]; then
+  echo "Cloning SAM 3 from GitHub..."
+  git clone https://github.com/facebookresearch/sam3.git sam3 || {
+    echo "git clone failed — is git installed?"; exit 1; }
+else
+  echo "sam3/ already present — skipping clone."
+fi
+
+echo "Installing SAM 3 (editable, no deps)..."
+"$PY" -m pip install -e sam3 --no-deps
+
+echo ""
+echo "Done. Restart ComfyUI, then use the Detect button in Angelo."
+echo "(The SAM 3 weights, sam3.pt, download automatically on first Detect.)"

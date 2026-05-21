@@ -8,5 +8,8 @@ __pycache__/
 *.log
 *.tmp
 
+# SAM 3 source, cloned by install_sam3_support.* (optional Detect feature)
+sam3/
+
 # Claude / agent working notes — internal, not for the public repo
 CLAUDE.md
