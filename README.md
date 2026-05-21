@@ -307,6 +307,8 @@ Your **Area Prompt** applies to whatever candidate you click (toggle it on in Re
 - A **highlight-opacity slider** — drag it down to fade the overlays and inspect the edges of what you just generated; candidates stay clickable, and it resets to full when you exit.
 - **Conf** (in the Detect row) tunes the match threshold (≈0.2–0.3 finds more / fainter matches).
 
+**While it works** a *"Loading SAM 3…"* overlay covers the preview — the **first** Detect of a session builds and caches the model (several seconds), so this is just busy feedback rather than a frozen-looking canvas. It clears itself the moment results come back; if a request ever hangs, a **✕** on the overlay closes it manually. Anything you need to read or act on — *no matches*, a bad query, or the *SAM 3 not installed* prompt — shows as a persistent in-app message bar you dismiss yourself, never a toast that flashes past.
+
 **It runs in latent space.** In standard **Refine** (Xtra-Fine off), the edit is a pure latent-space noise-mask inpaint — everything outside the silhouette stays bit-exact, with no VAE round-trip. SAM 3 runs on the decoded preview only to *produce* the shape, which is rasterised down into a latent mask. (Xtra-Fine and Smart Inpaint deliberately use the pixel-space VAE round-trip, as elsewhere.)
 
 ### Enabling it (one-time, optional)
