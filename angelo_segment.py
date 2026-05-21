@@ -70,6 +70,25 @@ def _download_checkpoint(target_path):
     return target_path
 
 
+def _find_bpe(sam3_module):
+    """Locate bpe_simple_vocab_16e6.txt.gz next to the imported sam3
+    package. Returns the path or None (let build use its default)."""
+    name = "bpe_simple_vocab_16e6.txt.gz"
+    try:
+        pkg_dir = os.path.dirname(os.path.abspath(sam3_module.__file__))
+    except Exception:
+        return None
+    for c in (
+        os.path.join(pkg_dir, "assets", name),         # rmbg layout
+        os.path.join(pkg_dir, name),
+        os.path.join(pkg_dir, "sam3", "assets", name),  # nested (tbg layout)
+        os.path.join(pkg_dir, "sam3_lib", name),
+    ):
+        if os.path.exists(c):
+            return c
+    return None
+
+
 def _ensure_model():
     """Lazily build + cache the SAM3 image model and processor. Returns
     (model, processor) or raises RuntimeError with a clear message."""
@@ -82,7 +101,10 @@ def _ensure_model():
         if _STATE["model"] is not None:
             return _STATE["model"], _STATE["processor"]
         try:
-            # Official Meta SAM 3 pip package (already installed in the env).
+            # SAM 3 — whatever `import sam3` resolves to in this env. This
+            # may be the pip package OR a copy vendored inside another
+            # custom node (rmbg / tbg-sam3) that's on sys.path first.
+            import sam3
             from sam3.model_builder import build_sam3_image_model
             from sam3.model.sam3_image_processor import Sam3Processor
         except Exception as e:  # pragma: no cover - environment dependent
@@ -107,8 +129,17 @@ def _ensure_model():
                     f"SAM 3 weights missing and auto-download failed: {e}\n"
                     f"Place sam3.pt manually at: {ckpt}"
                 )
-        print(f"[Angelo/SAM3] Building image model (checkpoint={ckpt})...")
-        model = build_sam3_image_model(checkpoint_path=ckpt)
+        # build_sam3_image_model's default bpe_path is computed relative to
+        # the package and is unreliable when sam3 is a vendored copy inside
+        # another node (it pointed at a non-existent assets/ dir). Locate
+        # the BPE tokenizer co-located with the loaded sam3 and pass it.
+        bpe_path = _find_bpe(sam3)
+        print(f"[Angelo/SAM3] Building image model (checkpoint={ckpt}, "
+              f"bpe={'auto' if not bpe_path else bpe_path})...")
+        if bpe_path:
+            model = build_sam3_image_model(checkpoint_path=ckpt, bpe_path=bpe_path)
+        else:
+            model = build_sam3_image_model(checkpoint_path=ckpt)
         processor = Sam3Processor(model)
         model.processor = processor
         model.eval()
