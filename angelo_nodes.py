@@ -866,11 +866,14 @@ class AngeloRefine:
                 "persistent_mask": ("BOOLEAN", {"default": False,
                                                 "tooltip": "When ON, the last mask used (click point or paint "
                                                            "stroke) is held in the node. Pressing the standard "
-                                                           "ComfyUI Queue button re-runs the workflow with that "
-                                                           "same mask + a fresh seed, giving a variation of just "
-                                                           "that region while leaving the rest of the cached "
-                                                           "image unchanged. Toggled via the Persistent Mask "
-                                                           "button above the preview."}),
+                                                           "ComfyUI Queue button re-runs that same mask + a fresh "
+                                                           "seed on the LATEST result, so each press builds further "
+                                                           "on that region — use it to gradually morph an area over "
+                                                           "several presses while the rest of the image stays "
+                                                           "unchanged. (To re-roll the same edit on the ORIGINAL "
+                                                           "image instead of building on it, use the Re-roll "
+                                                           "button.) Toggled via the Persistent Mask button above "
+                                                           "the preview."}),
 
                 "paint_mode": ("BOOLEAN", {"default": False,
                                            "tooltip": "When ON, hold + drag on the preview paints a "
@@ -926,6 +929,15 @@ class AngeloRefine:
                 # confirmed detection; in Refine mode it becomes the mask.
                 # Cleared by the JS after the confirm run.
                 "seg_polygon": ("STRING", {"default": "", "multiline": False}),
+
+                # Hidden — the Re-roll button drives this. Bumps on each
+                # press; run() pops the most recent edit to expose its
+                # pre-edit base, rebuilds the SAME mask from the widgets
+                # above, and re-samples with a fresh seed — swapping the
+                # new variation in place of the last attempt. Declared LAST
+                # so older saved workflows (which lack it) don't shift their
+                # positional widgets_values; it just defaults to 0.
+                "reroll_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -1000,6 +1012,7 @@ class AngeloRefine:
         loaded_resize_mode="keep",
         loaded_target_mp=1.5,
         seg_polygon="",
+        reroll_seq=0,
         latent=None,
         clip=None,
         unique_id=None,
@@ -1173,6 +1186,21 @@ class AngeloRefine:
                 state["history"].pop()
             state["undo_seq"] = undo_seq
 
+        # ===== Re-roll: redo the most recent edit with a fresh seed =====
+        # The Re-roll button bumps reroll_seq (and sets a new seed) without
+        # touching the mask widgets. Re-run the SAME mask on the SAME pre-
+        # edit base and swap the result in place of the last attempt — so
+        # the user can cycle seeds on one edit without reset → re-mask →
+        # rerun. Implemented as "pop the last refine to expose its pre-edit
+        # base as history[-1]"; the edit block below then re-runs from there
+        # and appends the fresh variation, restoring the stack depth (net
+        # effect: replace, not stack). No-op if there's no prior edit yet.
+        new_reroll = reroll_seq > 0 and reroll_seq != state.get("reroll_seq", -1)
+        reroll_now = new_reroll and len(state["history"]) > 1
+        if reroll_now:
+            state["history"].pop()
+        state["reroll_seq"] = reroll_seq
+
         current = state["history"][-1]
 
         # Has the user clicked since our last execution for this node?
@@ -1182,38 +1210,21 @@ class AngeloRefine:
             and click_seq != state["click_seq"]
         )
 
-        # Distinguish "genuine new click" (mask data changed, user has
-        # chosen a new region) from "persistent_mask Queue press" (only
-        # click_seq bumped, mask data same as last time). The JS hook
-        # for persistent_mask bumps click_seq WITHOUT touching click_x/y
-        # or stroke_points; a real click handler updates both. Compare
-        # to the last-processed values to tell them apart.
-        is_genuine_new_input = False
-        if new_click:
-            last_x = state.get("last_click_x", click_x - 1)
-            last_y = state.get("last_click_y", click_y - 1)
-            last_stroke = state.get("last_stroke_points", "__sentinel__")
-            is_genuine_new_input = (
-                click_x != last_x
-                or click_y != last_y
-                or stroke_points != last_stroke
-            )
+        # Source latent for every edit is the current cached latent, so all
+        # paths build ON TOP of the previous result:
+        #   - normal clicks / paints iterate on the latest image
+        #   - Persistent Mask Queue presses re-run the held mask on the
+        #     latest result with a fresh seed, so the region gradually
+        #     morphs further with each press (change something into
+        #     something else)
+        # Re-roll is the ONE exception, and it gets there for free: it
+        # popped the last attempt above, so `current` is now that attempt's
+        # PRE-edit base — re-running from here gives a fresh variation on the
+        # ORIGINAL image, swapped in for the last attempt instead of stacked.
 
-        # Persistent-mask base snapshot management. The snapshot is the
-        # source latent that every persistent_mask Queue press refines
-        # FROM, so each variation starts from the same base instead of
-        # iterating on the previous refine (which drifts).
-        # Lifecycle:
-        #   - persistent_mask OFF: snapshot cleared (no-op if already absent)
-        #   - persistent_mask ON + genuine new click: snapshot the
-        #     POST-refine result (next Queue presses iterate from this
-        #     new region's just-refined state)
-        #   - persistent_mask ON + Queue press: use existing snapshot
-        #     (or snapshot the current cache if none exists yet)
-        if not persistent_mask:
-            state.pop("persistent_mask_base", None)
-
-        if new_click:
+        if new_click or reroll_now:
+            # A re-roll re-runs the same mask widgets from the popped pre-
+            # edit base (current), so it flows through this same block.
             # Pixel → latent conversion. The JS sends us the actual image
             # dimensions (image_w, image_h) so we can derive the per-axis
             # scale dynamically rather than hardcoding a VAE downscale
@@ -1334,23 +1345,10 @@ class AngeloRefine:
             callback = latent_preview.prepare_callback(model, steps)
             disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
 
-            # Decide the SOURCE latent for this refine. Default = current
-            # cached latent (standard iterative behaviour). Override =
-            # persistent_mask snapshot when the user is iterating Queue
-            # presses on the held mask. The snapshot pins the source so
-            # repeated Queues all start from the same place — seed=fixed
-            # → identical results; seed=randomize → real variations of
-            # the same base, not drifting iterations.
-            if persistent_mask and not is_genuine_new_input:
-                # Queue press (or same-spot re-click) under persistent_mask.
-                # Take the existing snapshot, or create one from the
-                # current cache if this is the first persistent_mask
-                # iteration since the toggle was turned on.
-                if "persistent_mask_base" not in state:
-                    state["persistent_mask_base"] = current.clone()
-                refine_source = state["persistent_mask_base"]
-            else:
-                refine_source = current
+            # Source latent = the current cached latent for every path (see
+            # the note above). Re-roll already exposed the pre-edit base as
+            # `current` via its pop, so it needs no special-casing here.
+            refine_source = current
 
             # ===== Inpainting Mode pre-processing =====
             # Refine: no pre-processing — partial denoise from the
@@ -1391,8 +1389,9 @@ class AngeloRefine:
                 )
             else:
                 # ===== OFF path — copy-verbatim from 5dc6697; do not edit
-                # (only `current` → `refine_source` to support persistent
-                #  mask's snapshot-based source pinning) =====
+                # (only `current` → `refine_source`, which equals `current`
+                #  except on a Re-roll, where the pop pinned it to the
+                #  pre-edit base) =====
                 noise = comfy.sample.prepare_noise(refine_source, this_seed, None)
                 refined = comfy.sample.sample(
                     model, noise, steps, cfg, sampler_name, scheduler,
@@ -1411,22 +1410,9 @@ class AngeloRefine:
             if len(state["history"]) > _HISTORY_CAP:
                 state["history"] = state["history"][-_HISTORY_CAP:]
             state["click_seq"] = click_seq
-            # Track the actual click data that produced this refine so
-            # the next run can distinguish "new genuine click" vs
-            # "persistent_mask Queue press with identical inputs".
-            state["last_click_x"] = click_x
-            state["last_click_y"] = click_y
-            state["last_stroke_points"] = stroke_points
             # Store the seed Python used. JS uses this for after-gen
             # control + lock-on-fixed semantics.
             state["refine_seed_at_run"] = int(seed)
-            # If this was a genuine new click under persistent_mask,
-            # snapshot the POST-refine result as the new base for any
-            # subsequent persistent_mask Queue presses to iterate from.
-            # (Queue presses without a genuine new click leave the
-            # existing snapshot alone — they read from it, don't update.)
-            if persistent_mask and is_genuine_new_input:
-                state["persistent_mask_base"] = refined.clone()
             current = refined
 
         out_latent = {"samples": current}

@@ -393,6 +393,10 @@ function attachPreviewCanvas(node) {
     undoBtn.title = "Pop the most recent refine off the history stack. Restores the cached latent from before the last click.";
     row1.appendChild(undoBtn);
 
+    const rerollBtn = makeActionButton("Re-roll", () => triggerReroll(node), "reroll");
+    rerollBtn.title = "Try the most recent edit again with a fresh seed — SAME mask, SAME starting image. Each press replaces the last attempt with a new variation (it doesn't stack on top). Make an edit first, then Re-roll to cycle seeds without re-painting or resetting. Works for clicks, brush strokes, rectangles and detected masks.";
+    row1.appendChild(rerollBtn);
+
     row1.appendChild(makeSeparator());
 
     const persistentMaskToggle = makeToggleButton("Persistent Mask", () => {
@@ -401,7 +405,7 @@ function attachPreviewCanvas(node) {
         setWidget(w, !w.value);
         syncPersistentMaskToggle(node);
     });
-    persistentMaskToggle.title = "When ON, the last mask is held. Pressing the standard ComfyUI Queue button re-runs the workflow refining only that region with a fresh seed each time — variations of one area without re-painting.";
+    persistentMaskToggle.title = "When ON, the last mask is held. Pressing the standard ComfyUI Queue button re-runs that region on the LATEST result with a fresh seed each time, so each press builds further — gradually morph an area over several presses without re-painting. (To re-roll the same edit on the ORIGINAL image instead, use the Re-roll button.)";
     row1.appendChild(persistentMaskToggle);
     node._AngeloPersistentMaskToggle = persistentMaskToggle;
 
@@ -2483,6 +2487,26 @@ function triggerUndo(node) {
     if (typeof app.queuePrompt === "function") app.queuePrompt(0);
 }
 
+// Re-roll: redo the most recent edit with a fresh seed, same mask, same
+// pre-edit base. Force a NEW random seed even if Seed Ctrl is "fixed" —
+// a re-roll is by definition new dice — then bump reroll_seq so Python
+// pops the last attempt and re-runs the (unchanged) mask widgets in its
+// place. The mask widgets (click_x/y, stroke_points, rect_points,
+// seg_polygon) are deliberately left untouched so the same region is
+// reused.
+function triggerReroll(node) {
+    const wr = findWidget(node, "reroll_seq");
+    if (!wr) return;
+    const wseed = findWidget(node, "seed");
+    if (wseed) {
+        setWidget(wseed, Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
+        syncSeedInput(node);
+    }
+    setWidget(wr, ((wr.value || 0) + 1) & 0x7FFFFFFF);
+    dbg("queue reroll", { reroll_seq: wr.value, seed: wseed && wseed.value });
+    queuePrompt();
+}
+
 function triggerReset(node) {
     const wr = findWidget(node, "reset");
     const ws = findWidget(node, "click_seq");
@@ -2528,6 +2552,7 @@ function makeActionButton(label, onClick, kind = "neutral") {
     const themes = {
         reset:   { fg: "#ffe0d0", bg: "rgba(70, 50, 50, 0.95)",  border: "rgba(220, 140, 100, 0.9)" },
         undo:    { fg: "#dde7ff", bg: "rgba(50, 60, 70, 0.95)",  border: "rgba(120, 170, 220, 0.9)" },
+        reroll:  { fg: "#ecdcff", bg: "rgba(58, 50, 72, 0.95)",  border: "rgba(170, 130, 220, 0.9)" },
         neutral: { fg: "#ccc",    bg: "#2a2a2a",                  border: "#555" },
     };
     const th = themes[kind] || themes.neutral;
@@ -3087,6 +3112,8 @@ function hideMechanicalWidgets(node) {
         "loaded_image", "loaded_image_seq", "loaded_resize_mode", "loaded_target_mp",
         // Detect (SAM 3 / YOLO) — driven by the Detect row + click-confirm
         "seg_polygon",
+        // Re-roll button — bumps to re-run the last edit with a new seed
+        "reroll_seq",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",
