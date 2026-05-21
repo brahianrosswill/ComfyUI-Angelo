@@ -11,6 +11,14 @@ any KSampler-compatible model.
 
 from .angelo_nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 
+# Registers the /angelo/detect SAM 3 route. Import is best-effort — if
+# the server or sam3 deps aren't present, the node still loads (the
+# detect feature just won't be available).
+try:
+    from . import angelo_segment  # noqa: F401
+except Exception as _e:  # pragma: no cover
+    print(f"[Angelo] segmentation route not registered: {_e}")
+
 WEB_DIRECTORY = "./web"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
