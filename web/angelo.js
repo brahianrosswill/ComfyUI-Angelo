@@ -661,16 +661,22 @@ function attachPreviewCanvas(node) {
     modeRow.appendChild(modeSelect);
     node._AngeloModeSelect = modeSelect;
 
-    // Floating "Cancel Detect" button — pinned to the right edge of the
-    // Mode row, shown only while detection candidates are active. Red +
-    // obvious so it's clear you're in a click-a-candidate mode.
+    // Floating detect-mode panel — pinned top-right of the Mode row, shown
+    // only while candidates are active. Holds the red Cancel button + an
+    // opacity slider for the highlight overlay (drag down to peek at the
+    // edges of a just-generated region). Styled as one neat cluster.
+    node._AngeloDetOpacity = 1.0;
+    const detectPanel = document.createElement("div");
+    detectPanel.style.cssText = "position:absolute; right:6px; top:4px; z-index:6; display:none; "
+        + "flex-direction:column; align-items:stretch; gap:4px; padding:5px 6px; "
+        + "background:rgba(20,20,20,0.82); border:1px solid #555; border-radius:5px;";
+
     const cancelDetectBtn = document.createElement("button");
     cancelDetectBtn.type = "button";
     cancelDetectBtn.textContent = "✕ Cancel Detect";
     cancelDetectBtn.title = "Leave detect mode (you can also press Esc or Space). "
         + "The highlighted candidates stay up so you can edit each one until you cancel.";
-    cancelDetectBtn.style.cssText = "position:absolute; right:6px; top:50%; transform:translateY(-50%); "
-        + "display:none; z-index:6; font-size:11px; font-weight:bold; padding:3px 10px; "
+    cancelDetectBtn.style.cssText = "font-size:11px; font-weight:bold; padding:3px 10px; "
         + "border:1px solid #e66; border-radius:3px; background:rgba(200,40,40,0.95); "
         + "color:#fff; cursor:pointer;";
     for (const ev of ["pointerdown", "mousedown"]) {
@@ -681,8 +687,32 @@ function attachPreviewCanvas(node) {
         e.stopPropagation();
         clearDetections(node);
     });
-    modeRow.appendChild(cancelDetectBtn);
+
+    const opRow = document.createElement("div");
+    opRow.style.cssText = "display:flex; align-items:center; gap:6px; font-size:10px; color:#ccd;";
+    const opLabel = document.createElement("span");
+    opLabel.textContent = "Highlight";
+    const opSlider = document.createElement("input");
+    opSlider.type = "range";
+    opSlider.min = "0"; opSlider.max = "1"; opSlider.step = "0.05"; opSlider.value = "1";
+    opSlider.style.cssText = "flex:1 1 auto; width:96px; cursor:pointer;";
+    opSlider.title = "Selection-highlight opacity — drag down to peek at the edges of what you just generated. Candidates stay clickable.";
+    for (const ev of ["pointerdown", "mousedown"]) {
+        opSlider.addEventListener(ev, (e) => e.stopPropagation());
+    }
+    opSlider.addEventListener("input", () => {
+        node._AngeloDetOpacity = parseFloat(opSlider.value);
+        redrawCanvasWithOverlays(node);
+    });
+    opRow.appendChild(opLabel);
+    opRow.appendChild(opSlider);
+
+    detectPanel.appendChild(cancelDetectBtn);
+    detectPanel.appendChild(opRow);
+    modeRow.appendChild(detectPanel);
     node._AngeloCancelDetectBtn = cancelDetectBtn;
+    node._AngeloDetectPanel = detectPanel;
+    node._AngeloDetOpacitySlider = opSlider;
 
     // ===== ROW 3: shared generation config (always active) =====
     const stepsInput = makeNumberInput("Steps", { min: 1, max: 100, step: 1, width: 48 }, (val) => {
@@ -2025,15 +2055,19 @@ function clearDetections(node) {
     node._AngeloDetections = null;
     node._AngeloHoverDet = -1;
     node._AngeloEditedDets = null;
+    // Reset the highlight opacity to default so the next detect starts full.
+    node._AngeloDetOpacity = 1.0;
+    if (node._AngeloDetOpacitySlider) node._AngeloDetOpacitySlider.value = "1";
     syncDetectModeButton(node);
     redrawCanvasWithOverlays(node);
 }
 
-// Show the floating Cancel Detect button while candidates are active.
+// Show the floating detect-mode panel (Cancel + opacity slider) while
+// candidates are active.
 function syncDetectModeButton(node) {
-    const btn = node._AngeloCancelDetectBtn;
-    if (!btn) return;
-    btn.style.display = (node._AngeloDetections && node._AngeloDetections.length) ? "block" : "none";
+    const panel = node._AngeloDetectPanel;
+    if (!panel) return;
+    panel.style.display = (node._AngeloDetections && node._AngeloDetections.length) ? "flex" : "none";
 }
 
 // Topmost (tightest) detection whose bbox contains the image-pixel point.
@@ -2096,6 +2130,9 @@ function drawDetections(node, ctx) {
     if (!dets || !dets.length) return;
     const smart = isSmartInpaintMode(node);
     ctx.save();
+    // Selection-highlight opacity (the floating slider) scales the whole
+    // overlay so the user can dim it and inspect the edited region's edges.
+    ctx.globalAlpha = (typeof node._AngeloDetOpacity === "number") ? node._AngeloDetOpacity : 1;
     const edited = node._AngeloEditedDets;
     dets.forEach((d, i) => {
         const hot = (i === node._AngeloHoverDet);
