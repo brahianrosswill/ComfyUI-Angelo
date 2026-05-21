@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import torch
 
 import comfy.sample
@@ -555,6 +556,65 @@ def _gaussian_blur_2d(mask: torch.Tensor, sigma_latent: float) -> torch.Tensor:
     return m
 
 
+def _encode_loaded_image(vae, ref_json: str, resize_mode: str, target_mp: float):
+    """Load an image the user picked via the Load Image button and
+    VAE-encode it into a base latent.
+
+    `ref_json` is a JSON {name, subfolder, type} ref returned by
+    ComfyUI's /upload/image (falls back to treating the string as a bare
+    input-dir filename). resize_mode is "keep" (native res) or "mp"
+    (scaled to ~target_mp megapixels). In both cases dimensions are
+    rounded to a multiple of 16 so any supported VAE (8x or 16x) is
+    happy. Returns the latent samples tensor.
+    """
+    import numpy as np
+    from PIL import Image, ImageOps
+
+    # Resolve the image reference to a path.
+    name, subfolder, type_ = ref_json, "", "input"
+    try:
+        ref = json.loads(ref_json)
+        name = ref.get("name") or ref.get("filename") or ""
+        subfolder = ref.get("subfolder", "") or ""
+        type_ = ref.get("type", "input") or "input"
+    except (ValueError, TypeError):
+        pass
+
+    if type_ == "output":
+        base_dir = folder_paths.get_output_directory()
+    elif type_ == "temp":
+        base_dir = folder_paths.get_temp_directory()
+    else:
+        base_dir = folder_paths.get_input_directory()
+    path = os.path.normpath(os.path.join(base_dir, subfolder, name))
+    if not path.startswith(os.path.normpath(base_dir)):
+        raise ValueError("Angelo: invalid loaded-image path")
+    if not os.path.exists(path):
+        raise ValueError(f"Angelo: loaded image not found: {name}")
+
+    img = Image.open(path)
+    img = ImageOps.exif_transpose(img).convert("RGB")
+    w, h = img.size
+
+    if resize_mode == "mp" and target_mp > 0:
+        cur_mp = (w * h) / 1.0e6
+        if cur_mp > 0:
+            s = math.sqrt(target_mp / cur_mp)
+            w = int(round(w * s))
+            h = int(round(h * s))
+
+    # Round down to a multiple of 16 (divisible by both 8x and 16x VAEs).
+    w = max(16, (w // 16) * 16)
+    h = max(16, (h // 16) * 16)
+    if (w, h) != img.size:
+        img = img.resize((w, h), Image.LANCZOS)
+
+    arr = np.array(img).astype(np.float32) / 255.0      # (H, W, 3)
+    pixels = torch.from_numpy(arr)[None, ...]            # (1, H, W, 3)
+    samples = vae.encode(pixels[:, :, :, :3])
+    return samples
+
+
 def _decode_to_preview(vae, latent_samples: torch.Tensor):
     """Decode the latent and save to the temp directory in the same
     format PreviewImage uses, so we can return the same ui dict shape.
@@ -580,7 +640,6 @@ class AngeloRefine:
                 "model": ("MODEL",),
                 "positive": ("CONDITIONING",),
                 "negative": ("CONDITIONING",),
-                "latent": ("LATENT",),
                 "vae": ("VAE",),
 
                 # ===== Sampler Mode controls (top of native widget area) =====
@@ -810,12 +869,26 @@ class AngeloRefine:
                 # for non-distilled models.
                 "area_text_positive": ("STRING", {"default": "", "multiline": True}),
                 "area_text_negative": ("STRING", {"default": "", "multiline": True}),
+
+                # Hidden — the Load Image button drives these. loaded_image
+                # is a JSON ref {name,subfolder,type} from /upload/image;
+                # loaded_image_seq bumps on each load so run() knows a new
+                # image arrived; resize_mode/target_mp come from the popup.
+                "loaded_image": ("STRING", {"default": "", "multiline": False}),
+                "loaded_image_seq": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFF}),
+                "loaded_resize_mode": (["keep", "mp"], {"default": "keep"}),
+                "loaded_target_mp": ("FLOAT", {"default": 1.5, "min": 0.1, "max": 8.0, "step": 0.1}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
                 # without it the area text is ignored and the main
                 # positive/negative are used.
                 "clip": ("CLIP",),
+                # Base latent. OPTIONAL now: if the Load Image button is
+                # used, the loaded photo becomes the base and no latent
+                # input is needed. Sampler Mode still needs one (it defines
+                # the output dimensions for a fresh generation).
+                "latent": ("LATENT",),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -838,7 +911,6 @@ class AngeloRefine:
         model,
         positive,
         negative,
-        latent,
         vae,
         mode,
         sampler_denoise,
@@ -875,11 +947,53 @@ class AngeloRefine:
         guided_location="(none)",
         area_text_positive="",
         area_text_negative="",
+        loaded_image="",
+        loaded_image_seq=0,
+        loaded_resize_mode="keep",
+        loaded_target_mp=1.5,
+        latent=None,
         clip=None,
         unique_id=None,
     ):
         node_id = str(unique_id)
-        incoming = latent["samples"]
+        state = _STATE.get(node_id)
+
+        # ===== Base latent selection =====
+        # While an image is LOADED (loaded_image non-empty), it owns the
+        # base and the wired `latent` input is ignored — until the user
+        # hits Unload (which clears loaded_image). This stops the wired
+        # latent from re-winning after a load (which made undo snap back
+        # to the latent image). Priority:
+        #   1. a freshly loaded image (encode it, force reset)
+        #   2. an already-loaded image still active → keep the cached base
+        #   3. the wired `latent` input
+        #   4. the cached base (no latent, no load)
+        loaded_ref = str(loaded_image).strip()
+        loaded_active = bool(loaded_ref)
+        loaded_seq = int(loaded_image_seq)
+        new_loaded = loaded_active and (
+            state is None or state.get("loaded_seq") != loaded_seq
+        )
+        forced_base = None
+        if new_loaded:
+            forced_base = _encode_loaded_image(
+                vae, loaded_ref, str(loaded_resize_mode), float(loaded_target_mp)
+            )
+
+        if forced_base is not None:
+            incoming = forced_base
+        elif loaded_active and state is not None and state.get("history"):
+            # Loaded image still active — keep its base, ignore `latent`.
+            incoming = state["history"][0]
+        elif latent is not None:
+            incoming = latent["samples"]
+        elif state is not None and state.get("history"):
+            incoming = state["history"][0]
+        else:
+            raise ValueError(
+                "Angelo: no base image — connect a `latent` input or use the "
+                "Load Image button."
+            )
         incoming_fp = _latent_fingerprint(incoming)
 
         # ===== Smart Inpaint locks =====
@@ -954,6 +1068,7 @@ class AngeloRefine:
                 "undo_seq": undo_seq,
                 "fingerprint": incoming_fp,
                 "sampler_seed_at_run": int(sampler_seed),
+                "loaded_seq": loaded_seq,
             }
             out_latent = {"samples": new_latent}
             ui_msg = {
@@ -980,15 +1095,23 @@ class AngeloRefine:
         need_reset = (
             reset
             or state is None
+            or new_loaded
             or (fingerprint_changed and not persistent_mask)
         )
 
         if need_reset:
+            # Any reset means the base just changed (load, unload, upstream
+            # rewire). Anchor click_seq/undo_seq to the CURRENT widget
+            # values so a click that was meant for the OLD base can't trip
+            # the new-click gate and replay a stale inpaint onto the new
+            # base. The user's next genuine click bumps click_seq and fires
+            # normally.
             _STATE[node_id] = {
                 "history": [incoming.clone()],
-                "click_seq": -1,
-                "undo_seq": -1,
+                "click_seq": click_seq,
+                "undo_seq": undo_seq,
                 "fingerprint": incoming_fp,
+                "loaded_seq": loaded_seq,
             }
             state = _STATE[node_id]
 

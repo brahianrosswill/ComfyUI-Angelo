@@ -39,6 +39,7 @@ ComfyUI's standard "fix the bad hand" workflow is: generate, save the image, ope
 Angelo collapses that into:
 
 - **Click** a region. It refines with your main prompt, in place, immediately.
+- **Load Image** to edit an existing photo directly in the node — no Empty Latent + `VAEEncode` chain to wire (you still connect the `vae` input as normal; Angelo does the encode itself).
 - **Paint** a freeform stroke with mouse-down + drag. Same thing but custom shape.
 - **Type an Area Prompt** right in the node to refine a region with a different prompt (e.g. main prompt = "person in forest", area prompt = "detailed photorealistic face") — no second CLIP Text Encode node needed.
 - **Toggle Xtra-Fine** to refine small regions at much higher effective resolution (the ADetailer move, but with full prompt control).
@@ -106,6 +107,30 @@ Cursor changes by mode:
 Paint Mode lets you brush a freeform region to refine instead of single-circle clicks:
 
 ![Paint Mode — freeform brushed region](screenshots/paint-mode.png)
+
+## Load Image (edit an existing photo)
+
+Want to edit a photo rather than something you generated? Hit **🖼 Load Image** in the toolbar, pick a file, and it becomes the base — no Empty Latent or separate `VAEEncode` node to wire. The `latent` input is **optional**; Load Image is all you need.
+
+> **Still wire the `vae` input as normal.** Angelo encodes the loaded photo (and decodes previews) with it — it just does the encode internally, so you don't need a standalone `VAEEncode` node feeding `latent`.
+
+On load you're asked how to size it:
+
+- **Keep current resolution** — encode the photo as-is.
+- **Resize to _X_ MP** — scale to a target megapixel (good for taming huge phone photos / saving VRAM).
+
+Either way the dimensions are rounded to a multiple of 16 so any supported VAE is happy. The node then VAE-encodes the photo with the wired `vae`, installs it as the **base**, and switches to **Edit Mode** so you can click / paint / inpaint straight away.
+
+Notes:
+- **Reset and Undo return to the loaded photo** (it's the base).
+- **While an image is loaded, the `latent` input is ignored.** Hit **✕ Unload** (appears next to Load Image while one is loaded) to clear it and hand the base back to the wired latent.
+- The base is in-process state, so a ComfyUI restart clears it — but Load Image re-encodes from the uploaded file, so re-loading is one click.
+
+### Using Angelo as a standalone image editor
+
+Heads-up on how ComfyUI runs things: *any* Angelo action — Load Image, a refine click, a paint stroke — triggers ComfyUI's normal **queue**, which re-executes every output node on the canvas plus anything with a randomised seed. That's a ComfyUI behaviour, not something a custom node can opt out of (there's no "run just this node" API). So if you've got a sampler set to `randomize` or other Save Image chains hanging around, they fire on every edit too — which feels slow.
+
+If you're using Angelo to **edit existing images**, keep it snappy by running it on a **minimal graph** — `Load Checkpoint / loaders → Angelo → Save Image` — or **mute / bypass (Ctrl+M)** the other generation chains while you edit. Then a load or click only runs Angelo and its loaders (which are cached), and nothing else re-fires.
 
 ## Toolbar
 

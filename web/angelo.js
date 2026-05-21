@@ -7,6 +7,7 @@
 // where DOM image elements swallow clicks before LiteGraph sees them.
 
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 
 const NODE_NAME = "AngeloRefine";
 
@@ -609,6 +610,25 @@ function attachPreviewCanvas(node) {
     schedulerSelect.title = "Noise schedule (shared by Sampler Mode + refines).";
     row3.appendChild(schedulerSelect);
     node._AngeloSchedulerSelect = schedulerSelect;
+
+    // Load Image — bring an external photo in as the base to edit. Always
+    // active (both modes); no Empty Latent needed.
+    row3.appendChild(makeSeparator());
+    const loadImgBtn = makeActionButton("🖼 Load Image", () => triggerLoadImage(node), "neutral");
+    loadImgBtn.title = "Load an external image as the base to edit / refine. "
+        + "You'll be asked to keep its resolution or resize to a target "
+        + "megapixel (both rounded to a /16 multiple). The image becomes the "
+        + "base — Reset and Undo return to it. While loaded, the latent input "
+        + "is ignored (hit Unload to go back to it). No Empty Latent needed.";
+    row3.appendChild(loadImgBtn);
+    node._AngeloLoadImageBtn = loadImgBtn;
+
+    const unloadImgBtn = makeActionButton("✕ Unload", () => unloadImage(node), "neutral");
+    unloadImgBtn.title = "Clear the loaded image and return to the wired latent input "
+        + "as the base. Shown only while an image is loaded.";
+    unloadImgBtn.style.display = "none";
+    row3.appendChild(unloadImgBtn);
+    node._AngeloUnloadImageBtn = unloadImgBtn;
 
     // ===== ROW 4: Sampler-Mode seed group (greyed in Edit Mode) =====
     const samplerSeedInput = makeNumberInput("Smpl Seed", { min: 0, max: 0xFFFFFFFFFFFFFFFF, step: 1, width: 120 }, (val) => {
@@ -1689,6 +1709,180 @@ function queuePrompt() {
     }
 }
 
+// =====================================================================
+// Load Image — bring an external photo in as the base latent.
+// Button → file picker → resolution popup → upload (/upload/image) →
+// set hidden widgets → queue. run() VAE-encodes the upload into the
+// base; Reset/Undo then return to it.
+// =====================================================================
+
+function _angeloToast(message) {
+    const t = document.createElement("div");
+    t.textContent = message;
+    t.style.cssText = "position:fixed; top:20px; right:20px; background:#333; color:#fff; "
+        + "padding:10px 16px; border-radius:6px; z-index:100000; font:13px Arial,sans-serif; "
+        + "box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0; transition:opacity 0.18s;";
+    document.body.appendChild(t);
+    requestAnimationFrame(() => { t.style.opacity = "1"; });
+    setTimeout(() => { t.style.opacity = "0"; setTimeout(() => t.remove(), 220); }, 1600);
+}
+
+function triggerLoadImage(node) {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.style.display = "none";
+    input.addEventListener("change", () => {
+        const file = input.files && input.files[0];
+        if (file) showLoadImagePopup(node, file);
+        input.remove();
+    });
+    document.body.appendChild(input);
+    input.click();
+}
+
+async function _uploadLoadedImage(node, file, mode, mp) {
+    const fd = new FormData();
+    fd.append("image", file, file.name);
+    fd.append("overwrite", "false");
+    _angeloToast("Uploading image…");
+    let data;
+    try {
+        const res = await api.fetchApi("/upload/image", { method: "POST", body: fd });
+        if (!res.ok) { _angeloToast("Upload failed"); return; }
+        data = await res.json();
+    } catch (e) {
+        dbg("[Angelo] upload failed", e);
+        _angeloToast("Upload failed — see console");
+        return;
+    }
+    const ref = JSON.stringify({
+        name: data.name,
+        subfolder: data.subfolder || "",
+        type: data.type || "input",
+    });
+    const wImg = findWidget(node, "loaded_image");
+    const wMode = findWidget(node, "loaded_resize_mode");
+    const wMp = findWidget(node, "loaded_target_mp");
+    const wSeq = findWidget(node, "loaded_image_seq");
+    if (wImg) setWidget(wImg, ref);
+    if (wMode) setWidget(wMode, mode);
+    if (wMp) setWidget(wMp, mp);
+    if (wSeq) setWidget(wSeq, ((wSeq.value || 0) + 1) & 0x7FFFFFFF);
+
+    // Loading a photo means you want to EDIT it — flip to Edit Mode so
+    // the queue refines/previews the loaded base instead of regenerating
+    // it from noise (Sampler Mode at denoise 1.0). Fires the wrapped mode
+    // callback (lock + grey sync); refresh the Mode dropdown to match.
+    const wNodeMode = findWidget(node, "mode");
+    if (wNodeMode && String(wNodeMode.value) !== "Edit Mode") {
+        setWidget(wNodeMode, "Edit Mode");
+        syncModeSelect(node);
+    }
+
+    syncLoadImageControls(node);   // reveal the Unload button
+    _angeloToast("Loading as base…");
+    queuePrompt();
+}
+
+// Clear the loaded image → the wired latent input takes over as base.
+function unloadImage(node) {
+    const wImg = findWidget(node, "loaded_image");
+    if (wImg) setWidget(wImg, "");
+    syncLoadImageControls(node);
+    _angeloToast("Unloaded — using latent input");
+    queuePrompt();
+}
+
+// Show the Unload button only while an image is loaded.
+function syncLoadImageControls(node) {
+    const btn = node._AngeloUnloadImageBtn;
+    if (!btn) return;
+    const w = findWidget(node, "loaded_image");
+    const active = !!(w && String(w.value || "").trim());
+    btn.style.display = active ? "" : "none";
+}
+
+function showLoadImagePopup(node, file) {
+    const backdrop = document.createElement("div");
+    backdrop.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.6); "
+        + "display:flex; align-items:center; justify-content:center; z-index:10000; "
+        + "font-family:Arial,sans-serif;";
+
+    const modal = document.createElement("div");
+    modal.style.cssText = "background:#2a2a2a; color:#ddd; border:1px solid #555; "
+        + "border-radius:8px; padding:16px; width:360px; max-width:90vw; "
+        + "display:flex; flex-direction:column; gap:10px;";
+
+    const header = document.createElement("div");
+    header.textContent = "Load Image — resolution";
+    header.style.cssText = "font-size:14px; font-weight:bold; color:#aaa;";
+    modal.appendChild(header);
+
+    const hint = document.createElement("div");
+    hint.textContent = `"${file.name}" — both options round dimensions to a multiple of 16.`;
+    hint.style.cssText = "font-size:11px; color:#888;";
+    modal.appendChild(hint);
+
+    // Two mutually-exclusive choices via radio inputs.
+    const mkRadio = (value, labelText, checked) => {
+        const row = document.createElement("label");
+        row.style.cssText = "display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; padding:3px 2px;";
+        const r = document.createElement("input");
+        r.type = "radio";
+        r.name = "angelo_loadres";
+        r.value = value;
+        r.checked = !!checked;
+        const span = document.createElement("span");
+        span.textContent = labelText;
+        row.appendChild(r);
+        row.appendChild(span);
+        return { row, radio: r };
+    };
+    const keep = mkRadio("keep", "Keep current resolution", true);
+    const resize = mkRadio("mp", "Resize to", false);
+    modal.appendChild(keep.row);
+
+    // Resize row: radio + MP input + "MP" label, inline.
+    const mpInput = document.createElement("input");
+    mpInput.type = "number";
+    mpInput.min = "0.1"; mpInput.max = "8"; mpInput.step = "0.1"; mpInput.value = "1.5";
+    mpInput.style.cssText = "width:60px; background:#1a1a1a; color:#eee; border:1px solid #555; border-radius:3px; padding:2px 6px; font-size:12px;";
+    const mpLabel = document.createElement("span");
+    mpLabel.textContent = "MP";
+    mpLabel.style.cssText = "font-size:13px;";
+    resize.row.appendChild(mpInput);
+    resize.row.appendChild(mpLabel);
+    modal.appendChild(resize.row);
+    // Picking the MP field implies the resize choice.
+    mpInput.addEventListener("focus", () => { resize.radio.checked = true; });
+
+    const footer = document.createElement("div");
+    footer.style.cssText = "display:flex; justify-content:flex-end; gap:8px; margin-top:8px;";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.style.cssText = "background:#444; color:#ddd; border:none; padding:6px 14px; border-radius:4px; cursor:pointer;";
+    const loadBtn = document.createElement("button");
+    loadBtn.textContent = "Load";
+    loadBtn.style.cssText = "background:rgba(30,120,80,0.95); color:#fff; border:none; padding:6px 14px; border-radius:4px; cursor:pointer;";
+    footer.appendChild(cancelBtn);
+    footer.appendChild(loadBtn);
+    modal.appendChild(footer);
+
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+
+    const close = () => { if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop); };
+    cancelBtn.addEventListener("click", close);
+    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+    loadBtn.addEventListener("click", () => {
+        const mode = resize.radio.checked ? "mp" : "keep";
+        const mp = Math.max(0.1, Math.min(8, parseFloat(mpInput.value) || 1.5));
+        close();
+        _uploadLoadedImage(node, file, mode, mp);
+    });
+}
+
 function isPaintModeOn(node) {
     const w = findWidget(node, "paint_mode");
     if (!w) {
@@ -2284,6 +2478,7 @@ function syncAllToolbarControls(node) {
     syncSamplerSeedCtrlSelect(node);
     syncSamplerDenoiseInput(node);
     syncGuidedLocationSelect(node);
+    syncLoadImageControls(node);
     syncSmartInpaintLockedWidgets(node);
     syncAreaPromptBox(node);
     syncAreaPromptVisibility(node);
@@ -2398,6 +2593,8 @@ function hideMechanicalWidgets(node) {
         "area_text_positive", "area_text_negative",
         // Smart Guided Inpaint location (driven by the DOM dropdown)
         "guided_location",
+        // Load Image — driven by the Load Image button + popup
+        "loaded_image", "loaded_image_seq", "loaded_resize_mode", "loaded_target_mp",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",
