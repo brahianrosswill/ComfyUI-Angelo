@@ -39,7 +39,7 @@ ComfyUI's standard "fix the bad hand" workflow is: generate, save the image, ope
 Angelo collapses that into:
 
 - **Click** a region. It refines with your main prompt, in place, immediately.
-- **Load Image** to edit an existing photo directly in the node — no Empty Latent or VAEEncode wiring needed.
+- **Load Image** to edit an existing photo directly in the node — no Empty Latent + `VAEEncode` chain to wire (you still connect the `vae` input as normal; Angelo does the encode itself).
 - **Paint** a freeform stroke with mouse-down + drag. Same thing but custom shape.
 - **Type an Area Prompt** right in the node to refine a region with a different prompt (e.g. main prompt = "person in forest", area prompt = "detailed photorealistic face") — no second CLIP Text Encode node needed.
 - **Toggle Xtra-Fine** to refine small regions at much higher effective resolution (the ADetailer move, but with full prompt control).
@@ -110,7 +110,9 @@ Paint Mode lets you brush a freeform region to refine instead of single-circle c
 
 ## Load Image (edit an existing photo)
 
-Want to edit a photo rather than something you generated? Hit **🖼 Load Image** in the toolbar, pick a file, and it becomes the base — no Empty Latent or `VAEEncode` chain to wire. The `latent` input is **optional**; Load Image is all you need.
+Want to edit a photo rather than something you generated? Hit **🖼 Load Image** in the toolbar, pick a file, and it becomes the base — no Empty Latent or separate `VAEEncode` node to wire. The `latent` input is **optional**; Load Image is all you need.
+
+> **Still wire the `vae` input as normal.** Angelo encodes the loaded photo (and decodes previews) with it — it just does the encode internally, so you don't need a standalone `VAEEncode` node feeding `latent`.
 
 On load you're asked how to size it:
 
