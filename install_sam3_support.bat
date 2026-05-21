@@ -2,18 +2,23 @@
 REM Angelo - install the OPTIONAL SAM 3 "Detect" feature (Windows).
 REM
 REM Angelo's core needs no extra dependencies; this is only for the SAM 3
-REM text-segmentation Detect button. If "python" below is not your ComfyUI
-REM Python, set PYTHON to it first, e.g.:
+REM text-segmentation Detect button. It tries to find your ComfyUI Python
+REM automatically (portable embedded, or a venv beside ComfyUI). If it
+REM picks the wrong one, set PYTHON yourself, e.g.:
 REM    set "PYTHON=C:\ComfyUI\python_embeded\python.exe"
 REM    install_sam3_support.bat
 
 setlocal
 cd /d "%~dp0"
 
-REM Pick a Python: PYTHON env var, else portable embedded, else PATH.
-set "PY=python"
+REM Pick a Python in priority order: PYTHON env var, portable embedded,
+REM venv beside ComfyUI, then `python` on PATH.
+set "PY="
 if defined PYTHON set "PY=%PYTHON%"
-if not defined PYTHON if exist "..\..\..\python_embeded\python.exe" set "PY=..\..\..\python_embeded\python.exe"
+if not defined PY if exist "..\..\..\python_embeded\python.exe" set "PY=..\..\..\python_embeded\python.exe"
+if not defined PY if exist "..\..\venv\Scripts\python.exe" set "PY=..\..\venv\Scripts\python.exe"
+if not defined PY if exist "..\..\.venv\Scripts\python.exe" set "PY=..\..\.venv\Scripts\python.exe"
+if not defined PY set "PY=python"
 
 echo Angelo SAM 3 installer - using Python: %PY%
 "%PY%" --version
