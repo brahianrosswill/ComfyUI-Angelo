@@ -126,6 +126,12 @@ Notes:
 - **While an image is loaded, the `latent` input is ignored.** Hit **✕ Unload** (appears next to Load Image while one is loaded) to clear it and hand the base back to the wired latent.
 - The base is in-process state, so a ComfyUI restart clears it — but Load Image re-encodes from the uploaded file, so re-loading is one click.
 
+### Using Angelo as a standalone image editor
+
+Heads-up on how ComfyUI runs things: *any* Angelo action — Load Image, a refine click, a paint stroke — triggers ComfyUI's normal **queue**, which re-executes every output node on the canvas plus anything with a randomised seed. That's a ComfyUI behaviour, not something a custom node can opt out of (there's no "run just this node" API). So if you've got a sampler set to `randomize` or other Save Image chains hanging around, they fire on every edit too — which feels slow.
+
+If you're using Angelo to **edit existing images**, keep it snappy by running it on a **minimal graph** — `Load Checkpoint / loaders → Angelo → Save Image` — or **mute / bypass (Ctrl+M)** the other generation chains while you edit. Then a load or click only runs Angelo and its loaders (which are cached), and nothing else re-fires.
+
 ## Toolbar
 
 The toolbar holds everything — there are no native widget rows. Top to bottom, grouped into a centred Mode switch, a generation block, and an edit block:
