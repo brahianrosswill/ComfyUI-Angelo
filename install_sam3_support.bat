@@ -33,21 +33,21 @@ echo Using Python: %PY%
 "%PY%" --version
 if errorlevel 1 (
   echo Python not found. Set PYTHON to your ComfyUI python.exe and retry.
-  exit /b 1
+  goto :fail
 )
 
 "%PY%" -c "import sam3" 1>nul 2>nul
 if not errorlevel 1 (
   echo SAM 3 is already installed in this environment - nothing to do.
   echo Restart ComfyUI and use the Detect button in Angelo.
-  exit /b 0
+  goto :done
 )
 
 echo Installing SAM 3 runtime dependencies...
 "%PY%" -m pip install -r "sam3_requirements.txt"
 if errorlevel 1 (
   echo Dependency install failed.
-  exit /b 1
+  goto :fail
 )
 
 if not exist "sam3" (
@@ -55,7 +55,7 @@ if not exist "sam3" (
   git clone https://github.com/facebookresearch/sam3.git sam3
   if errorlevel 1 (
     echo git clone failed - is git installed and on PATH?
-    exit /b 1
+    goto :fail
   )
 ) else (
   echo sam3 folder already present - skipping clone.
@@ -65,10 +65,22 @@ echo Installing SAM 3 ^(editable, no deps^)...
 "%PY%" -m pip install -e "sam3" --no-deps
 if errorlevel 1 (
   echo SAM 3 install failed.
-  exit /b 1
+  goto :fail
 )
 
 echo.
 echo Done. Start ComfyUI again, then use the Detect button in Angelo.
 echo The SAM 3 weights ^(sam3.pt^) download automatically on first Detect.
+
+:done
+echo.
+pause
 endlocal
+exit /b 0
+
+:fail
+echo.
+echo Install did NOT complete - see the messages above.
+pause
+endlocal
+exit /b 1

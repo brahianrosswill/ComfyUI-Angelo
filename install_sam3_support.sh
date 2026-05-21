@@ -10,6 +10,12 @@
 # picks the wrong one, set PYTHON yourself, e.g.:
 #     PYTHON=/path/to/ComfyUI/venv/bin/python bash install_sam3_support.sh
 set -e
+
+# Keep the window open on finish/error when launched interactively (e.g.
+# double-clicked), so the user can read the result. No-op when piped/CI.
+_pause() { if [ -t 0 ]; then printf '\nPress Enter to close...'; read -r _; fi; }
+trap _pause EXIT
+
 cd "$(dirname "$0")"
 echo "Angelo SAM 3 installer — make sure ComfyUI is CLOSED before continuing."
 
