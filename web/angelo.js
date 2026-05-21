@@ -887,6 +887,32 @@ function attachPreviewCanvas(node) {
     canvasWrap.appendChild(minimap);
     node._AngeloMinimap = minimap;
 
+    // Persistent in-app notice bar — overlays the top of the preview for
+    // actionable messages (e.g. "SAM 3 Detect isn't installed — run the
+    // installer"). Stays until dismissed (✕) or a detect succeeds; this is
+    // NOT a transient toast, because the message needs reading + acting on.
+    const notice = document.createElement("div");
+    notice.style.cssText = "position:absolute; left:0; right:0; top:0; z-index:7; display:none; "
+        + "padding:8px 28px 8px 10px; background:rgba(150,40,40,0.96); color:#fff; "
+        + "font:12px/1.45 Arial,sans-serif; white-space:pre-line; "
+        + "border-bottom:1px solid rgba(255,255,255,0.25);";
+    const noticeText = document.createElement("span");
+    notice.appendChild(noticeText);
+    const noticeClose = document.createElement("button");
+    noticeClose.type = "button";
+    noticeClose.textContent = "✕";
+    noticeClose.title = "Dismiss";
+    noticeClose.style.cssText = "position:absolute; right:5px; top:5px; background:transparent; "
+        + "border:none; color:#fff; font-size:14px; line-height:1; cursor:pointer;";
+    for (const ev of ["pointerdown", "mousedown"]) {
+        noticeClose.addEventListener(ev, (e) => e.stopPropagation());
+    }
+    noticeClose.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); notice.style.display = "none"; });
+    notice.appendChild(noticeClose);
+    canvasWrap.appendChild(notice);
+    node._AngeloNotice = notice;
+    node._AngeloNoticeText = noticeText;
+
     // Per-node view state (zoom/pan). zoom 1 = fit; pan in CSS px.
     node._AngeloZoom = 1;
     node._AngeloPanX = 0;
@@ -1911,6 +1937,17 @@ function queuePrompt() {
 // base; Reset/Undo then return to it.
 // =====================================================================
 
+// Persistent in-app notice bar (top of the preview). For actionable
+// messages that must be read — unlike _angeloToast which auto-hides.
+function showAngeloNotice(node, message) {
+    if (!node._AngeloNotice) return;
+    node._AngeloNoticeText.textContent = message;
+    node._AngeloNotice.style.display = "block";
+}
+function hideAngeloNotice(node) {
+    if (node._AngeloNotice) node._AngeloNotice.style.display = "none";
+}
+
 function _angeloToast(message) {
     const t = document.createElement("div");
     t.textContent = message;
@@ -2015,6 +2052,7 @@ async function runDetect(node, conceptOverride) {
     if (!ref || !ref.filename) { _angeloToast("Generate or load an image first"); return; }
     const confEl = node._AngeloDetectConf && node._AngeloDetectConf._AngeloInput;
     const conf = confEl ? Math.max(0.05, Math.min(0.95, parseFloat(confEl.value) || 0.3)) : 0.3;
+    hideAngeloNotice(node);   // clear any prior error before a new attempt
     _angeloToast("Detecting…");
     try {
         const res = await api.fetchApi("/angelo/detect", {
@@ -2032,7 +2070,9 @@ async function runDetect(node, conceptOverride) {
         const data = await res.json();
         if (!res.ok || data.error) {
             dbg("[Angelo] detect error", data);
-            _angeloToast("Detect failed: " + (data.error || res.status));
+            // Persistent in-app notice — esp. the "SAM 3 not installed →
+            // run the installer" message, which needs reading + acting on.
+            showAngeloNotice(node, data.error || `Detect failed (HTTP ${res.status}).`);
             return;
         }
         const dets = data.detections || [];
@@ -2046,7 +2086,7 @@ async function runDetect(node, conceptOverride) {
         redrawCanvasWithOverlays(node);
     } catch (e) {
         dbg("[Angelo] detect failed", e);
-        _angeloToast("Detect failed — see console");
+        showAngeloNotice(node, "Detect request failed — is the ComfyUI server reachable? See the console.");
     }
 }
 
