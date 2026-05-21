@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # Angelo — install the OPTIONAL SAM 3 "Detect" feature (macOS / Linux).
 #
+# CLOSE ComfyUI before running this (installing into a running env can
+# fail on locked/loaded packages), then start it again when done.
+#
 # Angelo's core needs no extra dependencies; this is only for the SAM 3
 # text-segmentation Detect button. It tries to find your ComfyUI Python
-# automatically (a venv beside ComfyUI). If it picks the wrong one, set
-# PYTHON yourself, e.g.:
+# automatically (recorded by the node, or a venv beside ComfyUI). If it
+# picks the wrong one, set PYTHON yourself, e.g.:
 #     PYTHON=/path/to/ComfyUI/venv/bin/python bash install_sam3_support.sh
 set -e
 cd "$(dirname "$0")"
+echo "Angelo SAM 3 installer — make sure ComfyUI is CLOSED before continuing."
 
 # Pick a Python: PYTHON env var, then the interpreter ComfyUI recorded on
 # its last start (.comfy_python.txt — reliable for any launcher), then a

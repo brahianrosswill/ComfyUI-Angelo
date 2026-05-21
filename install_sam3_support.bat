@@ -1,15 +1,20 @@
 @echo off
 REM Angelo - install the OPTIONAL SAM 3 "Detect" feature (Windows).
 REM
+REM CLOSE ComfyUI before running this (installing into a running env can
+REM fail on locked/loaded packages), then start it again when done.
+REM
 REM Angelo's core needs no extra dependencies; this is only for the SAM 3
 REM text-segmentation Detect button. It tries to find your ComfyUI Python
-REM automatically (portable embedded, or a venv beside ComfyUI). If it
-REM picks the wrong one, set PYTHON yourself, e.g.:
+REM automatically (recorded by the node, portable embedded, or a venv
+REM beside ComfyUI). If it picks the wrong one, set PYTHON yourself, e.g.:
 REM    set "PYTHON=C:\ComfyUI\python_embeded\python.exe"
 REM    install_sam3_support.bat
 
 setlocal
 cd /d "%~dp0"
+
+echo Angelo SAM 3 installer - make sure ComfyUI is CLOSED before continuing.
 
 REM Pick a Python in priority order: PYTHON env var, then the interpreter
 REM ComfyUI recorded on its last start (.comfy_python.txt - the reliable
@@ -24,7 +29,7 @@ if not defined PY if exist "..\..\.venv\Scripts\python.exe" set "PY=..\..\.venv\
 if not defined PY set "PY=python"
 if not exist ".comfy_python.txt" echo NOTE: start ComfyUI once so Angelo can record its Python, for the most reliable install.
 
-echo Angelo SAM 3 installer - using Python: %PY%
+echo Using Python: %PY%
 "%PY%" --version
 if errorlevel 1 (
   echo Python not found. Set PYTHON to your ComfyUI python.exe and retry.
@@ -64,6 +69,6 @@ if errorlevel 1 (
 )
 
 echo.
-echo Done. Restart ComfyUI, then use the Detect button in Angelo.
+echo Done. Start ComfyUI again, then use the Detect button in Angelo.
 echo The SAM 3 weights ^(sam3.pt^) download automatically on first Detect.
 endlocal
