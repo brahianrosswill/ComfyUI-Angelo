@@ -101,6 +101,14 @@ function installKeyboardShortcuts() {
             return;
         }
 
+        // Space also exits detect mode (only when not typing — handled
+        // above — so a space in the concept box is unaffected).
+        if (event.key === " " && node._AngeloDetections && node._AngeloDetections.length) {
+            clearDetections(node);
+            event.preventDefault();
+            return;
+        }
+
         // Only active in Edit Mode. Sampler Mode has the toolbar
         // greyed; the keys would feel inert.
         const modeW = findWidget(node, "mode");
@@ -345,6 +353,7 @@ function attachPreviewCanvas(node) {
     const modeRow = makeToolbarRow();
     modeRow.style.justifyContent = "center";
     modeRow.style.borderBottom = "1px solid #333";
+    modeRow.style.position = "relative";  // anchor for the floating Cancel Detect button
 
     // Generation / sampler-seed rows (set-once-ish, sit under Mode).
     const row3 = makeToolbarRow();
@@ -651,6 +660,29 @@ function attachPreviewCanvas(node) {
     modeSelect.title = "Sampler Mode = generate a fresh base latent from the inputs (acts like a KSampler). Edit Mode = click/drag the preview to refine or inpaint the cached latent. Switching to Edit Mode auto-locks the sampler seed to the value that produced the base.";
     modeRow.appendChild(modeSelect);
     node._AngeloModeSelect = modeSelect;
+
+    // Floating "Cancel Detect" button — pinned to the right edge of the
+    // Mode row, shown only while detection candidates are active. Red +
+    // obvious so it's clear you're in a click-a-candidate mode.
+    const cancelDetectBtn = document.createElement("button");
+    cancelDetectBtn.type = "button";
+    cancelDetectBtn.textContent = "✕ Cancel Detect";
+    cancelDetectBtn.title = "Leave detect mode (you can also press Esc or Space). "
+        + "The highlighted candidates stay up so you can edit each one until you cancel.";
+    cancelDetectBtn.style.cssText = "position:absolute; right:6px; top:50%; transform:translateY(-50%); "
+        + "display:none; z-index:6; font-size:11px; font-weight:bold; padding:3px 10px; "
+        + "border:1px solid #e66; border-radius:3px; background:rgba(200,40,40,0.95); "
+        + "color:#fff; cursor:pointer;";
+    for (const ev of ["pointerdown", "mousedown"]) {
+        cancelDetectBtn.addEventListener(ev, (e) => e.stopPropagation());
+    }
+    cancelDetectBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        clearDetections(node);
+    });
+    modeRow.appendChild(cancelDetectBtn);
+    node._AngeloCancelDetectBtn = cancelDetectBtn;
 
     // ===== ROW 3: shared generation config (always active) =====
     const stepsInput = makeNumberInput("Steps", { min: 1, max: 100, step: 1, width: 48 }, (val) => {
@@ -1107,12 +1139,13 @@ function attachPreviewCanvas(node) {
     //     Smart Inpaint handle the canvas via pointer drag above). ---
     canvas.addEventListener("click", (event) => {
         // Detection select mode owns the click (Refine + Smart Inpaint):
-        // clicking a candidate confirms it; clicking empty space dismisses.
+        // clicking a candidate edits it and keeps the rest up for more
+        // edits. Empty-space clicks do nothing (so you can't accidentally
+        // exit mid-batch) — leave via Cancel Detect / Esc / Space.
         if (node._AngeloDetections && node._AngeloDetections.length) {
             const p = eventToImagePixel(event);
             const det = p ? _detAtPoint(node, p.pixelX, p.pixelY) : null;
             if (det) confirmDetection(node, det);
-            else clearDetections(node);
             return;
         }
         if (isSmartGuidedInpaintMode(node)) return; // no canvas interaction
@@ -1614,6 +1647,12 @@ function loadIntoCanvas(node, url) {
             resetView(node);
         }
 
+        // If we're in detect mode (candidates persist for batch editing),
+        // re-overlay them on the freshly-refined preview so they stay put.
+        if (node._AngeloDetections && node._AngeloDetections.length) {
+            redrawCanvasWithOverlays(node);
+        }
+
         // Force a node redraw so LiteGraph re-computes the canvas widget size.
         if (node.graph && node.graph.setDirtyCanvas) {
             node.graph.setDirtyCanvas(true, false);
@@ -1969,8 +2008,10 @@ async function runDetect(node, conceptOverride) {
         const dets = data.detections || [];
         node._AngeloDetections = dets;
         node._AngeloHoverDet = -1;
+        node._AngeloEditedDets = new Set();   // which candidates have been edited
+        syncDetectModeButton(node);
         _angeloToast(dets.length
-            ? `${dets.length} match${dets.length === 1 ? "" : "es"} — click one`
+            ? `${dets.length} match${dets.length === 1 ? "" : "es"} — click each to edit; Cancel/Esc to exit`
             : "No matches — try a lower Conf or different words");
         redrawCanvasWithOverlays(node);
     } catch (e) {
@@ -1983,7 +2024,16 @@ function clearDetections(node) {
     if (!node._AngeloDetections) return;
     node._AngeloDetections = null;
     node._AngeloHoverDet = -1;
+    node._AngeloEditedDets = null;
+    syncDetectModeButton(node);
     redrawCanvasWithOverlays(node);
+}
+
+// Show the floating Cancel Detect button while candidates are active.
+function syncDetectModeButton(node) {
+    const btn = node._AngeloCancelDetectBtn;
+    if (!btn) return;
+    btn.style.display = (node._AngeloDetections && node._AngeloDetections.length) ? "block" : "none";
 }
 
 // Topmost (tightest) detection whose bbox contains the image-pixel point.
@@ -2029,11 +2079,15 @@ function confirmDetection(node, det) {
         if (wrp) setWidget(wrp, "");
     }
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
-    clearDetections(node);
+    // Keep the candidates up (batch editing): mark this one edited (drawn
+    // green) and leave the rest clickable. Exit via Cancel / Esc / Space.
+    const idx = node._AngeloDetections ? node._AngeloDetections.indexOf(det) : -1;
+    if (idx >= 0) {
+        node._AngeloEditedDets = node._AngeloEditedDets || new Set();
+        node._AngeloEditedDets.add(idx);
+    }
+    redrawCanvasWithOverlays(node);   // immediate feedback: clicked one turns green
     queuePrompt();
-    // seg_polygon / rect_points are one-shot — they're cleared in
-    // onExecuted (after the run, safely past graph serialization) so the
-    // next manual click is a normal refine.
 }
 
 // Draw candidate outlines (called from redrawCanvasWithOverlays, image-px ctx).
@@ -2042,11 +2096,24 @@ function drawDetections(node, ctx) {
     if (!dets || !dets.length) return;
     const smart = isSmartInpaintMode(node);
     ctx.save();
+    const edited = node._AngeloEditedDets;
     dets.forEach((d, i) => {
         const hot = (i === node._AngeloHoverDet);
-        ctx.lineWidth = hot ? 4 : 2;
-        ctx.strokeStyle = hot ? "rgba(255, 220, 80, 1.0)" : "rgba(80, 200, 255, 0.9)";
-        ctx.fillStyle = hot ? "rgba(255, 220, 80, 0.25)" : "rgba(80, 200, 255, 0.15)";
+        const done = edited && edited.has(i);
+        if (hot) {
+            ctx.lineWidth = 4;
+            ctx.strokeStyle = "rgba(255, 220, 80, 1.0)";
+            ctx.fillStyle = "rgba(255, 220, 80, 0.25)";
+        } else if (done) {
+            // already edited this session — green so the user can track progress
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = "rgba(90, 220, 120, 0.95)";
+            ctx.fillStyle = "rgba(90, 220, 120, 0.18)";
+        } else {
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = "rgba(80, 200, 255, 0.9)";
+            ctx.fillStyle = "rgba(80, 200, 255, 0.15)";
+        }
         if (smart) {
             const b = d.bbox;
             if (b) {
