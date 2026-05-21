@@ -2076,7 +2076,11 @@ function syncDetectControls(node) {
     const modeW = findWidget(node, "mode");
     const inEdit = modeW && String(modeW.value) === "Edit Mode";
     const show = inEdit && !isSmartGuidedInpaintMode(node);
-    row.style.display = show ? "" : "none";
+    // Must restore "flex" (not "") — an empty string reverts the row to a
+    // <div>'s default display:block, which kills flex-wrap:nowrap and the
+    // separator's align-self:stretch (dropdown drops to a new line, sep
+    // vanishes).
+    row.style.display = show ? "flex" : "none";
     if (!show) clearDetections(node);
 }
 
