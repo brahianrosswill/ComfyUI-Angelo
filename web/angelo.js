@@ -359,7 +359,8 @@ function attachPreviewCanvas(node) {
     refineRowsWrap.style.borderTop = "1px solid #333";
     const row1 = makeToolbarRow();
     const row2 = makeToolbarRow();
-    const detectRow = makeToolbarRow();   // SAM 3 / YOLO detect (Refine + Smart Inpaint)
+    const detectRow = makeToolbarRow();   // SAM 3 detect (Refine + Smart Inpaint)
+    detectRow.style.flexWrap = "nowrap";  // keep it one line; the text box flexes
     refineRowsWrap.appendChild(row1);
     refineRowsWrap.appendChild(row2);
     refineRowsWrap.appendChild(detectRow);
@@ -569,7 +570,7 @@ function attachPreviewCanvas(node) {
     const detText = document.createElement("input");
     detText.type = "text";
     detText.placeholder = "what to segment (e.g. the face)";
-    detText.style.cssText = "flex:1 1 260px; min-width:240px; background:#1a1a1a; color:#ddd; "
+    detText.style.cssText = "flex:1 1 auto; min-width:0; background:#1a1a1a; color:#ddd; "
         + "border:1px solid #555; border-radius:3px; padding:2px 6px; font-size:11px;";
     detText.title = "SAM 3 concept prompt — a noun phrase describing what to find. "
         + "Hit Detect to highlight every match; click the one you want to refine/inpaint it.";
