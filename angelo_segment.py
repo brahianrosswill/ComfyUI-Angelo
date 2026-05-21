@@ -30,8 +30,11 @@ _STATE = {
     "import_error": None, # cached import failure message, if any
 }
 
-# Default checkpoint location (ComfyUI root / models/sam3/sam3.pt).
-_DEFAULT_CKPT_REL = os.path.join("models", "sam3", "sam3.pt")
+# Checkpoint lives in <models>/sam3/sam3.pt. Auto-downloaded from the
+# public HF mirror the installed comfyui-sam3 pack uses (no HF token
+# needed — the official facebook/sam3 repo is gated).
+_SAM3_HF_REPO = "1038lab/sam3"
+_SAM3_CKPT_NAME = "sam3.pt"
 
 
 def _torch_devices():
@@ -39,15 +42,32 @@ def _torch_devices():
     return mm.get_torch_device(), mm.unet_offload_device()
 
 
-def _resolve_checkpoint():
-    """Absolute path to sam3.pt under the ComfyUI root, or None to let
-    build_sam3_image_model() use its own default / auto-download."""
-    try:
-        from folder_paths import base_path
-    except Exception:
-        return None
-    p = os.path.join(base_path, _DEFAULT_CKPT_REL)
-    return p if os.path.exists(p) else None
+def _checkpoint_path():
+    """Absolute path where sam3.pt should live (<models>/sam3/sam3.pt)."""
+    import folder_paths
+    return os.path.join(folder_paths.models_dir, "sam3", _SAM3_CKPT_NAME)
+
+
+def _download_checkpoint(target_path):
+    """Fetch sam3.pt into <models>/sam3/ from the public HF mirror, using
+    the proven download+move pattern from the installed SAM 3 node packs."""
+    import shutil
+    from huggingface_hub import hf_hub_download
+
+    target_dir = os.path.dirname(target_path)
+    os.makedirs(target_dir, exist_ok=True)
+    print(f"[Angelo/SAM3] sam3.pt not found — downloading from {_SAM3_HF_REPO} "
+          f"(this is a one-time ~GB download)...")
+    downloaded = hf_hub_download(
+        repo_id=_SAM3_HF_REPO,
+        filename=_SAM3_CKPT_NAME,
+        local_dir=target_dir,
+        local_dir_use_symlinks=False,
+    )
+    if os.path.normpath(downloaded) != os.path.normpath(target_path):
+        shutil.move(downloaded, target_path)
+    print(f"[Angelo/SAM3] Downloaded to {target_path}")
+    return target_path
 
 
 def _ensure_model():
@@ -75,12 +95,19 @@ def _ensure_model():
             raise RuntimeError(_STATE["import_error"])
 
         load_device, _ = _torch_devices()
-        ckpt = _resolve_checkpoint()
-        print(f"[Angelo/SAM3] Building image model (checkpoint={ckpt or 'default'})...")
-        if ckpt:
-            model = build_sam3_image_model(checkpoint_path=ckpt)
-        else:
-            model = build_sam3_image_model()
+        ckpt = _checkpoint_path()
+        if not os.path.exists(ckpt):
+            try:
+                _download_checkpoint(ckpt)
+            except Exception as e:
+                # Not cached in import_error — a network blip should retry
+                # on the next Detect, not block until restart.
+                raise RuntimeError(
+                    f"SAM 3 weights missing and auto-download failed: {e}\n"
+                    f"Place sam3.pt manually at: {ckpt}"
+                )
+        print(f"[Angelo/SAM3] Building image model (checkpoint={ckpt})...")
+        model = build_sam3_image_model(checkpoint_path=ckpt)
         processor = Sam3Processor(model)
         model.processor = processor
         model.eval()
