@@ -913,6 +913,49 @@ function attachPreviewCanvas(node) {
     node._AngeloNotice = notice;
     node._AngeloNoticeText = noticeText;
 
+    // Loading overlay — shown while a Detect request is in flight. SAM 3's
+    // FIRST detect has to build + cache the model (several seconds), during
+    // which the canvas would otherwise look frozen before the first outline
+    // appears. Auto-dismisses when the detect resolves; the ✕ is a manual
+    // escape hatch so a hung/crashed request can never trap the overlay up.
+    if (!document.getElementById("angelo-spin-style")) {
+        const s = document.createElement("style");
+        s.id = "angelo-spin-style";
+        s.textContent = "@keyframes angelo-spin{to{transform:rotate(360deg)}}";
+        document.head.appendChild(s);
+    }
+    const loading = document.createElement("div");
+    loading.style.cssText = "position:absolute; inset:0; z-index:8; display:none; "
+        + "align-items:center; justify-content:center; background:rgba(0,0,0,0.55);";
+    const loadingBox = document.createElement("div");
+    loadingBox.style.cssText = "position:relative; display:flex; align-items:center; gap:11px; "
+        + "padding:15px 36px 15px 18px; background:rgba(28,28,28,0.97); color:#fff; "
+        + "font:13px/1.4 Arial,sans-serif; border-radius:8px; "
+        + "border:1px solid rgba(255,255,255,0.18); box-shadow:0 4px 16px rgba(0,0,0,0.55);";
+    const spinner = document.createElement("div");
+    spinner.style.cssText = "flex:0 0 auto; width:16px; height:16px; "
+        + "border:2px solid rgba(255,255,255,0.25); border-top-color:#fff; "
+        + "border-radius:50%; animation:angelo-spin 0.8s linear infinite;";
+    const loadingText = document.createElement("span");
+    loadingText.textContent = "Loading SAM 3…";
+    loadingBox.appendChild(spinner);
+    loadingBox.appendChild(loadingText);
+    const loadingClose = document.createElement("button");
+    loadingClose.type = "button";
+    loadingClose.textContent = "✕";
+    loadingClose.title = "Dismiss";
+    loadingClose.style.cssText = "position:absolute; right:6px; top:4px; background:transparent; "
+        + "border:none; color:#fff; font-size:13px; line-height:1; cursor:pointer;";
+    for (const ev of ["pointerdown", "mousedown"]) {
+        loadingClose.addEventListener(ev, (e) => e.stopPropagation());
+    }
+    loadingClose.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); loading.style.display = "none"; });
+    loadingBox.appendChild(loadingClose);
+    loading.appendChild(loadingBox);
+    canvasWrap.appendChild(loading);
+    node._AngeloLoading = loading;
+    node._AngeloLoadingText = loadingText;
+
     // Per-node view state (zoom/pan). zoom 1 = fit; pan in CSS px.
     node._AngeloZoom = 1;
     node._AngeloPanX = 0;
@@ -1948,6 +1991,15 @@ function hideAngeloNotice(node) {
     if (node._AngeloNotice) node._AngeloNotice.style.display = "none";
 }
 
+function showAngeloLoading(node, message) {
+    if (!node._AngeloLoading) return;
+    if (message) node._AngeloLoadingText.textContent = message;
+    node._AngeloLoading.style.display = "flex";
+}
+function hideAngeloLoading(node) {
+    if (node._AngeloLoading) node._AngeloLoading.style.display = "none";
+}
+
 function _angeloToast(message) {
     const t = document.createElement("div");
     t.textContent = message;
@@ -2047,13 +2099,15 @@ async function runDetect(node, conceptOverride) {
     const text = (conceptOverride != null && String(conceptOverride).trim())
         ? String(conceptOverride).trim()
         : (node._AngeloDetectText?.value || "").trim();
-    if (!text) { _angeloToast("Type what to segment first"); return; }
+    if (!text) { showAngeloNotice(node, "Type what to segment first (e.g. \"the face\")."); return; }
     const ref = node._AngeloPreviewRef;
-    if (!ref || !ref.filename) { _angeloToast("Generate or load an image first"); return; }
+    if (!ref || !ref.filename) { showAngeloNotice(node, "Generate or load an image first, then Detect."); return; }
     const confEl = node._AngeloDetectConf && node._AngeloDetectConf._AngeloInput;
     const conf = confEl ? Math.max(0.05, Math.min(0.95, parseFloat(confEl.value) || 0.3)) : 0.3;
     hideAngeloNotice(node);   // clear any prior error before a new attempt
-    _angeloToast("Detecting…");
+    // In-app overlay (NOT a toast) while the request is in flight — the
+    // first detect builds the SAM 3 model and can take several seconds.
+    showAngeloLoading(node, "Loading SAM 3…");
     try {
         const res = await api.fetchApi("/angelo/detect", {
             method: "POST",
@@ -2080,13 +2134,16 @@ async function runDetect(node, conceptOverride) {
         node._AngeloHoverDet = -1;
         node._AngeloEditedDets = new Set();   // which candidates have been edited
         syncDetectModeButton(node);
-        _angeloToast(dets.length
-            ? `${dets.length} match${dets.length === 1 ? "" : "es"} — click each to edit; Cancel/Esc to exit`
-            : "No matches — try a lower Conf or different words");
+        if (!dets.length) {
+            // Nothing highlights, so say so where it can be read + acted on.
+            showAngeloNotice(node, "No matches — try a lower Conf or different words.");
+        }
         redrawCanvasWithOverlays(node);
     } catch (e) {
         dbg("[Angelo] detect failed", e);
         showAngeloNotice(node, "Detect request failed — is the ComfyUI server reachable? See the console.");
+    } finally {
+        hideAngeloLoading(node);   // self-dismiss on every exit path
     }
 }
 
