@@ -87,6 +87,13 @@ function installKeyboardShortcuts() {
         const node = _AngeloHoveredNode;
         if (!node) return;
 
+        // Esc dismisses pending detection candidates (even from an input,
+        // so it works right after typing a concept + Detect).
+        if (event.key === "Escape" && node._AngeloDetections && node._AngeloDetections.length) {
+            clearDetections(node);
+            return;
+        }
+
         // Don't intercept when the user is typing in an input or textarea
         // (e.g., the toolbar Seed input, or any other DOM widget).
         const t = event.target;
@@ -240,10 +247,18 @@ app.registerExtension({
             const refs = message?.Angelo_preview;
             if (refs && refs.length > 0) {
                 const ref = refs[0];
+                this._AngeloPreviewRef = ref;   // for the SAM 3 / YOLO detect route
                 const url = makeViewUrl(ref);
                 dbg("loading preview", url);
                 loadIntoCanvas(this, url);
             }
+
+            // Clear the one-shot detection mask widget after the run that
+            // consumed it (safely past graph serialization), so the next
+            // manual click is a normal refine rather than re-using the
+            // confirmed silhouette.
+            const segW = findWidget(this, "seg_polygon");
+            if (segW && String(segW.value || "")) setWidget(segW, "");
 
             // Seed_at_run capture — used by the lock-on-fixed code. ComfyUI's
             // ui message values arrive as 1-element lists (their convention).
@@ -345,8 +360,11 @@ function attachPreviewCanvas(node) {
     refineRowsWrap.style.borderTop = "1px solid #333";
     const row1 = makeToolbarRow();
     const row2 = makeToolbarRow();
+    const detectRow = makeToolbarRow();   // SAM 3 / YOLO detect (Refine + Smart Inpaint)
     refineRowsWrap.appendChild(row1);
     refineRowsWrap.appendChild(row2);
+    refineRowsWrap.appendChild(detectRow);
+    node._AngeloDetectRow = detectRow;
 
     toggleBarWrap.appendChild(modeRow);
     toggleBarWrap.appendChild(row3);
@@ -542,6 +560,37 @@ function attachPreviewCanvas(node) {
     methodSelect.title = "Xtra-Fine: pixel-space enlarge method. lanczos = sharpest with mild ringing; bilinear = smooth (great for skin/faces); bicubic = middle; nearest-exact = blocky preserves exact values; bislerp/area = niche. Only used when Xtra-Fine is ON.";
     row2.appendChild(methodSelect);
     node._AngeloMethodSelect = methodSelect;
+
+    // ===== DETECT ROW: SAM 3 auto-segment (Refine + Smart Inpaint) =====
+    const detLabel = document.createElement("span");
+    detLabel.textContent = "🔍 Detect:";
+    detLabel.style.cssText = "font-size:11px; color:#bbb; padding:0 2px 0 4px;";
+    detectRow.appendChild(detLabel);
+
+    const detText = document.createElement("input");
+    detText.type = "text";
+    detText.placeholder = "what to segment (e.g. the face)";
+    detText.style.cssText = "flex:1 1 160px; min-width:120px; background:#1a1a1a; color:#ddd; "
+        + "border:1px solid #555; border-radius:3px; padding:2px 6px; font-size:11px;";
+    detText.title = "SAM 3 concept prompt — a noun phrase describing what to find. "
+        + "Hit Detect to highlight every match; click the one you want to refine/inpaint it.";
+    for (const ev of ["pointerdown", "mousedown", "keydown", "keyup"]) {
+        detText.addEventListener(ev, (e) => e.stopPropagation());
+    }
+    detText.addEventListener("keydown", (e) => { if (e.key === "Enter") runDetect(node); });
+    detectRow.appendChild(detText);
+    node._AngeloDetectText = detText;
+
+    const detConf = makeNumberInput("Conf", { min: 0.05, max: 0.95, step: 0.05, width: 48 }, () => {});
+    detConf.title = "Detection confidence threshold. Lower (≈0.2–0.3) finds more / fainter matches.";
+    if (detConf._AngeloInput) detConf._AngeloInput.value = "0.3";
+    detectRow.appendChild(detConf);
+    node._AngeloDetectConf = detConf;
+
+    const detBtn = makeActionButton("Detect", () => runDetect(node), "neutral");
+    detBtn.title = "Run SAM 3 on the current preview and highlight matches. Click a highlight to confirm; Esc / click empty space to dismiss.";
+    detectRow.appendChild(detBtn);
+    node._AngeloDetectBtn = detBtn;
 
     // ===== MODE ROW: the master Sampler/Edit switch, centred up top =====
     const modeWidget = findWidget(node, "mode");
@@ -866,6 +915,18 @@ function attachPreviewCanvas(node) {
         if (!p) return;
         node._AngeloHover = { x: p.cssX, y: p.cssY };
 
+        // Detection select mode: highlight the candidate under the cursor.
+        if (node._AngeloDetections && node._AngeloDetections.length) {
+            const det = _detAtPoint(node, p.pixelX, p.pixelY);
+            const idx = det ? node._AngeloDetections.indexOf(det) : -1;
+            canvas.style.cursor = idx >= 0 ? "pointer" : "default";
+            if (idx !== node._AngeloHoverDet) {
+                node._AngeloHoverDet = idx;
+                redrawCanvasWithOverlays(node);
+            }
+            return;
+        }
+
         if (node._AngeloDraggingRect) {
             // Smart Inpaint: update the live opposite-corner of the
             // drag-out rectangle as the user moves the cursor.
@@ -904,6 +965,9 @@ function attachPreviewCanvas(node) {
 
     canvas.addEventListener("pointerdown", (event) => {
         if (event.button !== 0) return;
+        // Detection select mode owns the canvas — let the click confirm a
+        // candidate; don't start a paint stroke or rectangle drag.
+        if (node._AngeloDetections && node._AngeloDetections.length) return;
         // Smart Guided Inpaint has no canvas interaction at all — the
         // location comes from the dropdown, the run from the button.
         if (isSmartGuidedInpaintMode(node)) return;
@@ -999,6 +1063,15 @@ function attachPreviewCanvas(node) {
     // --- Single-click refine (click mode only — paint mode and
     //     Smart Inpaint handle the canvas via pointer drag above). ---
     canvas.addEventListener("click", (event) => {
+        // Detection select mode owns the click (Refine + Smart Inpaint):
+        // clicking a candidate confirms it; clicking empty space dismisses.
+        if (node._AngeloDetections && node._AngeloDetections.length) {
+            const p = eventToImagePixel(event);
+            const det = p ? _detAtPoint(node, p.pixelX, p.pixelY) : null;
+            if (det) confirmDetection(node, det);
+            else clearDetections(node);
+            return;
+        }
         if (isSmartGuidedInpaintMode(node)) return; // no canvas interaction
         if (isSmartInpaintMode(node)) return; // rectangle-drag owns it
         if (isPaintModeOn(node)) return; // paint mode owns the interaction
@@ -1599,6 +1672,9 @@ function redrawCanvasWithOverlays(node) {
         ctx.stroke();
         ctx.restore();
     }
+
+    // 3. Detection candidates (SAM 3 / YOLO) awaiting a click-to-confirm.
+    drawDetections(node, ctx);
 }
 
 function flashClickOverlay(node, cx, cy) {
@@ -1801,6 +1877,153 @@ function syncLoadImageControls(node) {
     const w = findWidget(node, "loaded_image");
     const active = !!(w && String(w.value || "").trim());
     btn.style.display = active ? "" : "none";
+}
+
+// =====================================================================
+// Detect (SAM 3 auto-segment): text → /angelo/detect → highlighted
+// candidates on the canvas → click-to-confirm → mask per mode → refine.
+// Refine uses the silhouette polygons; Smart Inpaint uses the bbox.
+// =====================================================================
+
+async function runDetect(node) {
+    const text = (node._AngeloDetectText?.value || "").trim();
+    if (!text) { _angeloToast("Type what to segment first"); return; }
+    const ref = node._AngeloPreviewRef;
+    if (!ref || !ref.filename) { _angeloToast("Generate or load an image first"); return; }
+    const confEl = node._AngeloDetectConf && node._AngeloDetectConf._AngeloInput;
+    const conf = confEl ? Math.max(0.05, Math.min(0.95, parseFloat(confEl.value) || 0.3)) : 0.3;
+    _angeloToast("Detecting…");
+    try {
+        const res = await api.fetchApi("/angelo/detect", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                method: "sam3_text",
+                text,
+                confidence_threshold: conf,
+                filename: ref.filename,
+                subfolder: ref.subfolder || "",
+                type: ref.type || "temp",
+            }),
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) {
+            dbg("[Angelo] detect error", data);
+            _angeloToast("Detect failed: " + (data.error || res.status));
+            return;
+        }
+        const dets = data.detections || [];
+        node._AngeloDetections = dets;
+        node._AngeloHoverDet = -1;
+        _angeloToast(dets.length
+            ? `${dets.length} match${dets.length === 1 ? "" : "es"} — click one`
+            : "No matches — try a lower Conf or different words");
+        redrawCanvasWithOverlays(node);
+    } catch (e) {
+        dbg("[Angelo] detect failed", e);
+        _angeloToast("Detect failed — see console");
+    }
+}
+
+function clearDetections(node) {
+    if (!node._AngeloDetections) return;
+    node._AngeloDetections = null;
+    node._AngeloHoverDet = -1;
+    redrawCanvasWithOverlays(node);
+}
+
+// Topmost (tightest) detection whose bbox contains the image-pixel point.
+function _detAtPoint(node, px, py) {
+    const dets = node._AngeloDetections || [];
+    let best = null, bestArea = Infinity;
+    for (const d of dets) {
+        const b = d.bbox;
+        if (!b) continue;
+        if (px >= b[0] && px <= b[2] && py >= b[1] && py <= b[3]) {
+            const area = Math.max(1, (b[2] - b[0]) * (b[3] - b[1]));
+            if (area < bestArea) { bestArea = area; best = d; }
+        }
+    }
+    return best;
+}
+
+function confirmDetection(node, det) {
+    if (isSmartGuidedInpaintMode(node)) return;
+    const ws = findWidget(node, "click_seq");
+    if (!ws) return;
+    const wx = findWidget(node, "click_x");
+    const wy = findWidget(node, "click_y");
+    const wr = findWidget(node, "reset");
+    const wsp = findWidget(node, "stroke_points");
+    const wrp = findWidget(node, "rect_points");
+    const wseg = findWidget(node, "seg_polygon");
+    const smart = isSmartInpaintMode(node);
+    const b = det.bbox || [0, 0, 0, 0];
+    if (wx) setWidget(wx, Math.round((b[0] + b[2]) / 2));
+    if (wy) setWidget(wy, Math.round((b[1] + b[3]) / 2));
+    if (wr) setWidget(wr, false);
+    if (wsp) setWidget(wsp, "");
+    if (smart) {
+        // Smart Inpaint: the bbox is the rectangle.
+        if (wrp) setWidget(wrp, JSON.stringify([[
+            Math.round(b[0]), Math.round(b[1]), Math.round(b[2]), Math.round(b[3]),
+        ]]));
+        if (wseg) setWidget(wseg, "");
+    } else {
+        // Refine: the silhouette polygons are the mask.
+        if (wseg) setWidget(wseg, JSON.stringify(det.polygons || []));
+        if (wrp) setWidget(wrp, "");
+    }
+    setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
+    clearDetections(node);
+    queuePrompt();
+    // seg_polygon / rect_points are one-shot — they're cleared in
+    // onExecuted (after the run, safely past graph serialization) so the
+    // next manual click is a normal refine.
+}
+
+// Draw candidate outlines (called from redrawCanvasWithOverlays, image-px ctx).
+function drawDetections(node, ctx) {
+    const dets = node._AngeloDetections;
+    if (!dets || !dets.length) return;
+    const smart = isSmartInpaintMode(node);
+    ctx.save();
+    dets.forEach((d, i) => {
+        const hot = (i === node._AngeloHoverDet);
+        ctx.lineWidth = hot ? 4 : 2;
+        ctx.strokeStyle = hot ? "rgba(255, 220, 80, 1.0)" : "rgba(80, 200, 255, 0.9)";
+        ctx.fillStyle = hot ? "rgba(255, 220, 80, 0.25)" : "rgba(80, 200, 255, 0.15)";
+        if (smart) {
+            const b = d.bbox;
+            if (b) {
+                ctx.beginPath();
+                ctx.rect(b[0], b[1], b[2] - b[0], b[3] - b[1]);
+                ctx.fill(); ctx.stroke();
+            }
+        } else {
+            for (const poly of (d.polygons || [])) {
+                if (!poly || poly.length < 6) continue;
+                ctx.beginPath();
+                ctx.moveTo(poly[0], poly[1]);
+                for (let k = 2; k < poly.length - 1; k += 2) ctx.lineTo(poly[k], poly[k + 1]);
+                ctx.closePath();
+                ctx.fill(); ctx.stroke();
+            }
+        }
+    });
+    ctx.restore();
+}
+
+// Show the Detect row only in Edit Mode's masked sub-modes (Refine +
+// Smart Inpaint); hide in Smart Guided (no mask) and Sampler Mode.
+function syncDetectControls(node) {
+    const row = node._AngeloDetectRow;
+    if (!row) return;
+    const modeW = findWidget(node, "mode");
+    const inEdit = modeW && String(modeW.value) === "Edit Mode";
+    const show = inEdit && !isSmartGuidedInpaintMode(node);
+    row.style.display = show ? "" : "none";
+    if (!show) clearDetections(node);
 }
 
 function showLoadImagePopup(node, file) {
@@ -2227,6 +2450,8 @@ function syncSmartInpaintLockedWidgets(node) {
     syncAreaPromptToggle(node);
     syncPersistentMaskToggle(node);
     syncAreaPromptVisibility(node);
+    // Detect row hides in Smart Guided (no mask), shows in Refine/Smart Inpaint.
+    syncDetectControls(node);
 }
 
 function _syncNumberInput(wrap, widgetValue) {
@@ -2286,6 +2511,8 @@ function syncModeState(node) {
         samplerSeedRow.style.opacity = inSampler ? "1" : "0.4";
         samplerSeedRow.style.pointerEvents = inSampler ? "auto" : "none";
     }
+    // Detect row shows only in Edit Mode's masked sub-modes.
+    syncDetectControls(node);
     // Cursor: default in Sampler Mode (clicks do nothing); crosshair
     // in Smart Inpaint (rectangle drag); cell when paint mode is on
     // for Refine; crosshair otherwise.
@@ -2479,6 +2706,7 @@ function syncAllToolbarControls(node) {
     syncSamplerDenoiseInput(node);
     syncGuidedLocationSelect(node);
     syncLoadImageControls(node);
+    syncDetectControls(node);
     syncSmartInpaintLockedWidgets(node);
     syncAreaPromptBox(node);
     syncAreaPromptVisibility(node);
@@ -2595,6 +2823,8 @@ function hideMechanicalWidgets(node) {
         "guided_location",
         // Load Image — driven by the Load Image button + popup
         "loaded_image", "loaded_image_seq", "loaded_resize_mode", "loaded_target_mp",
+        // Detect (SAM 3 / YOLO) — driven by the Detect row + click-confirm
+        "seg_polygon",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",

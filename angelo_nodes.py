@@ -218,6 +218,48 @@ def _rect_mask_latent(
     return mask
 
 
+def _parse_seg_polygons(raw: str):
+    """Parse the seg_polygon widget — a JSON list of polygons, each a flat
+    [x0,y0,x1,y1,...] coord list in image-pixel space (a SAM 3 / YOLO
+    detection's silhouette). Returns the list, or None if empty/invalid."""
+    if not raw or not str(raw).strip():
+        return None
+    try:
+        polys = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(polys, list) or not polys:
+        return None
+    return polys
+
+
+def _polygons_mask_latent(
+    latent_h: int,
+    latent_w: int,
+    polygons_pixel,
+    scale_x: float,
+    scale_y: float,
+    device: torch.device,
+) -> torch.Tensor:
+    """Rasterise one or more silhouette polygons (image-pixel coords) into
+    a filled [1, H, W] latent-space mask (their union)."""
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    img = Image.new("L", (latent_w, latent_h), 0)
+    draw = ImageDraw.Draw(img)
+    for poly in (polygons_pixel or []):
+        if not poly or len(poly) < 6:
+            continue
+        pts = [
+            (float(poly[i]) * scale_x, float(poly[i + 1]) * scale_y)
+            for i in range(0, len(poly) - 1, 2)
+        ]
+        draw.polygon(pts, fill=255)
+    arr = np.array(img, dtype=np.float32) / 255.0
+    return torch.from_numpy(arr)[None, ...].to(device)
+
+
 def _mask_bbox_latent(mask: torch.Tensor) -> tuple[int, int, int, int] | None:
     """Tight latent-space bbox of non-zero mask values. Returns
     (y_min, y_max, x_min, x_max) or None if the mask is empty.
@@ -878,6 +920,12 @@ class AngeloRefine:
                 "loaded_image_seq": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFF}),
                 "loaded_resize_mode": (["keep", "mp"], {"default": "keep"}),
                 "loaded_target_mp": ("FLOAT", {"default": 1.5, "min": 0.1, "max": 8.0, "step": 0.1}),
+
+                # Hidden — the Detect (SAM 3 / YOLO) flow drives this. A JSON
+                # list of silhouette polygons (image-pixel coords) for the
+                # confirmed detection; in Refine mode it becomes the mask.
+                # Cleared by the JS after the confirm run.
+                "seg_polygon": ("STRING", {"default": "", "multiline": False}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -951,6 +999,7 @@ class AngeloRefine:
         loaded_image_seq=0,
         loaded_resize_mode="keep",
         loaded_target_mp=1.5,
+        seg_polygon="",
         latent=None,
         clip=None,
         unique_id=None,
@@ -1214,8 +1263,18 @@ class AngeloRefine:
                     mask = torch.zeros((1, latent_h, latent_w),
                                        device=current.device, dtype=torch.float32)
             else:
+                # Refine mask sources, in priority:
+                #   1. a confirmed segmentation silhouette (SAM 3 / YOLO)
+                #   2. a paint stroke (union of brush circles)
+                #   3. a single click circle
+                seg_polys = _parse_seg_polygons(seg_polygon)
                 stroke_pts = _parse_stroke_points(stroke_points) if paint_mode else []
-                if stroke_pts:
+                if seg_polys:
+                    mask = _polygons_mask_latent(
+                        latent_h, latent_w, seg_polys,
+                        scale_x, scale_y, current.device,
+                    )
+                elif stroke_pts:
                     mask = _stroke_mask_latent(
                         latent_h, latent_w,
                         stroke_pts, r_latent,
