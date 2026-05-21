@@ -591,16 +591,19 @@ function attachPreviewCanvas(node) {
     detectRow.appendChild(detBtn);
     node._AngeloDetectBtn = detBtn;
 
+    // Space + separator between Detect and the quick-presets dropdown.
+    detectRow.appendChild(makeSeparator());
+
     // Quick-detect presets — selecting one runs SAM 3 immediately with
     // that concept (does NOT change the text box). Resets to the
     // placeholder after each pick so the same item can be re-run.
     const quickSel = document.createElement("select");
     quickSel.style.cssText = "font-size:11px; padding:2px 4px; border:1px solid #555; "
-        + "border-radius:3px; background:#1a1a1a; color:#ddd; margin-left:2px;";
+        + "border-radius:3px; background:#1a1a1a; color:#ddd; margin-left:4px; min-width:104px;";
     quickSel.title = "Quick-detect a common subject — runs SAM 3 immediately. Doesn't touch the text box.";
     // Placeholder first (index 0 — reset target), then grouped presets.
     const _ph = document.createElement("option");
-    _ph.value = "Quick…"; _ph.textContent = "Quick…";
+    _ph.value = "Quick Detect…"; _ph.textContent = "Quick Detect…";
     quickSel.appendChild(_ph);
     const _QUICK_GROUPS = {
         "People": ["Person", "Face", "Eyes", "Mouth", "Teeth", "Nose", "Ears", "Hair", "Skin", "Beard"],
@@ -623,8 +626,8 @@ function attachPreviewCanvas(node) {
     }
     quickSel.addEventListener("change", () => {
         const v = quickSel.value;
-        quickSel.selectedIndex = 0;            // reset to "Quick…"
-        if (v && v !== "Quick…") runDetect(node, v.toLowerCase());
+        quickSel.selectedIndex = 0;            // reset to "Quick Detect…"
+        if (v && v !== "Quick Detect…") runDetect(node, v.toLowerCase());
     });
     quickSel.addEventListener("pointerdown", (e) => e.stopPropagation());
     quickSel.addEventListener("mousedown", (e) => e.stopPropagation());
