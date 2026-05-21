@@ -288,15 +288,26 @@ Honest expectations: text-based placement is fuzzy by nature. Coarse regions ("t
 
 ## Detect — auto-segment with SAM 3 (optional)
 
-Instead of painting or dragging a region, you can let **SAM 3** find it for you by *describing* it. In **Refine** or **Smart Inpaint**, a **🔍 Detect** row appears below the refine controls: type a concept ("the face", "the red car", "her left hand"), hit **Detect**, and Angelo highlights every match on the preview. **Click the one you want** to confirm — and only then does it run. (Click empty space or press **Esc** to dismiss.)
+Instead of painting or dragging a region, let **SAM 3** find it for you by *describing* it. In **Refine** or **Smart Inpaint**, a **🔍 Detect** row appears in the toolbar:
 
-The confirmed detection becomes the mask, shaped to the mode:
+- **Type a concept** — "the face", "the red car", "her left hand" — and hit **Detect**; or
+- Use the **Quick Detect…** dropdown of common subjects, grouped into People / Body / Clothing / Animals / Scene / Objects (face, hands, hair, clothing, sky, car, …). Picking one runs immediately and doesn't touch the text box.
 
-- **Refine** → the exact **silhouette** is the mask.
-- **Smart Inpaint** → the detection's **bounding box** becomes the rectangle.
-- **Smart Guided Inpaint** → Detect is hidden (that mode has no mask).
+Angelo highlights every match on the preview and you enter **detect mode** — nothing changes until you click. **Click a highlight** to edit that object; the others stay up so you can **work through each one in turn** without re-detecting. Edited candidates turn **green** (so you can track progress), the hovered one is **yellow**.
 
-This is "highlight, then click when happy" — unlike a paint stroke or box, nothing changes until you pick a candidate. A **Conf** value tunes how eagerly it matches (≈0.2–0.3 finds more / fainter matches).
+Per mode, the confirmed detection becomes:
+- **Refine** → the exact **silhouette** mask (a latent-space inpaint — see below).
+- **Smart Inpaint** → the detection's **bounding box** as the rectangle.
+- **Smart Guided Inpaint** → Detect is hidden (no mask there).
+
+Your **Area Prompt** applies to whatever candidate you click (toggle it on in Refine; it's forced on in Smart Inpaint) — so you can detect "person", set a prompt, and apply it to each one in turn.
+
+**Detect-mode controls** — a floating panel pins to the top-right (beside the Mode switch) while candidates are up:
+- **✕ Cancel Detect**, **Esc**, or **Space** leaves detect mode. Empty-space clicks do *nothing*, so you can't accidentally drop out mid-batch.
+- A **highlight-opacity slider** — drag it down to fade the overlays and inspect the edges of what you just generated; candidates stay clickable, and it resets to full when you exit.
+- **Conf** (in the Detect row) tunes the match threshold (≈0.2–0.3 finds more / fainter matches).
+
+**It runs in latent space.** In standard **Refine** (Xtra-Fine off), the edit is a pure latent-space noise-mask inpaint — everything outside the silhouette stays bit-exact, with no VAE round-trip. SAM 3 runs on the decoded preview only to *produce* the shape, which is rasterised down into a latent mask. (Xtra-Fine and Smart Inpaint deliberately use the pixel-space VAE round-trip, as elsewhere.)
 
 ### Enabling it (one-time, optional)
 
