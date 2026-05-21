@@ -45,6 +45,7 @@ Angelo collapses that into:
 - **Toggle Xtra-Fine** to refine small regions at much higher effective resolution (the ADetailer move, but with full prompt control).
 - **Smart Inpaint** — drag a rectangle and add brand-new content with an edit model (FLUX 2 Klein etc.).
 - **Smart Guided Inpaint** — no drawing at all: pick a location from a dropdown ("top left", "center", …) + describe what to add, and the edit model places it.
+- **Detect** a region by *describing* it (optional SAM 3) — type "the face", click the highlight, and it masks the silhouette for you. No painting.
 - **Toggle Persistent Mask** + press Queue repeatedly to generate variations of the same region.
 - **Undo** to roll back the last refine.
 
@@ -59,7 +60,7 @@ cd ComfyUI/custom_nodes/
 git clone https://github.com/shootthesound/ComfyUI-Angelo.git
 ```
 
-Restart ComfyUI. No additional Python dependencies.
+Restart ComfyUI. No additional Python dependencies for the core node. (The optional **Detect** feature adds SAM 3 — see [Detect](#detect--auto-segment-with-sam-3-optional) for its one-time opt-in installer.)
 
 ## Quick start (FLUX 2 Klein 9B distilled)
 
@@ -284,6 +285,30 @@ Honest expectations: text-based placement is fuzzy by nature. Coarse regions ("t
 …and the run (Location `Left edge`, *"a magical glowing whole in the ground, Keep the lighting the same"*) puts the glow on the left while leaving the rest of the scene intact:
 
 ![Smart Guided Inpaint — glow placed on the left edge](screenshots/smart-guided-left-edge.png)
+
+## Detect — auto-segment with SAM 3 (optional)
+
+Instead of painting or dragging a region, you can let **SAM 3** find it for you by *describing* it. In **Refine** or **Smart Inpaint**, a **🔍 Detect** row appears below the refine controls: type a concept ("the face", "the red car", "her left hand"), hit **Detect**, and Angelo highlights every match on the preview. **Click the one you want** to confirm — and only then does it run. (Click empty space or press **Esc** to dismiss.)
+
+The confirmed detection becomes the mask, shaped to the mode:
+
+- **Refine** → the exact **silhouette** is the mask.
+- **Smart Inpaint** → the detection's **bounding box** becomes the rectangle.
+- **Smart Guided Inpaint** → Detect is hidden (that mode has no mask).
+
+This is "highlight, then click when happy" — unlike a paint stroke or box, nothing changes until you pick a candidate. A **Conf** value tunes how eagerly it matches (≈0.2–0.3 finds more / fainter matches).
+
+### Enabling it (one-time, optional)
+
+Detect needs Meta's **SAM 3**, which isn't on PyPI — so it's **opt-in** and not installed with the node (Angelo's core stays dependency-free). To enable it:
+
+1. **Close ComfyUI.**
+2. Run the installer in the `ComfyUI-Angelo` folder:
+   - **Windows:** `install_sam3_support.bat`
+   - **macOS / Linux:** `install_sam3_support.sh`  (`bash install_sam3_support.sh`)
+3. **Start ComfyUI again.**
+
+The script installs SAM 3 + its dependencies into the *same* Python ComfyUI uses (it reads the interpreter path Angelo records on startup, so it works for portable, venv, or conda installs). The **SAM 3 weights (`sam3.pt`, ~GB) download automatically on first Detect** from a public mirror — no Hugging Face token needed. If `sam3` isn't installed, the Detect button just tells you to run the script; everything else in Angelo keeps working.
 
 ## Area Prompt (refine with a different prompt)
 
