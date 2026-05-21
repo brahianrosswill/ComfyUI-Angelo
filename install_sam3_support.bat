@@ -11,14 +11,18 @@ REM    install_sam3_support.bat
 setlocal
 cd /d "%~dp0"
 
-REM Pick a Python in priority order: PYTHON env var, portable embedded,
-REM venv beside ComfyUI, then `python` on PATH.
+REM Pick a Python in priority order: PYTHON env var, then the interpreter
+REM ComfyUI recorded on its last start (.comfy_python.txt - the reliable
+REM one for any launcher), then portable embedded / venv beside ComfyUI,
+REM then `python` on PATH as a last resort.
 set "PY="
 if defined PYTHON set "PY=%PYTHON%"
+if not defined PY if exist ".comfy_python.txt" set /p PY=<".comfy_python.txt"
 if not defined PY if exist "..\..\..\python_embeded\python.exe" set "PY=..\..\..\python_embeded\python.exe"
 if not defined PY if exist "..\..\venv\Scripts\python.exe" set "PY=..\..\venv\Scripts\python.exe"
 if not defined PY if exist "..\..\.venv\Scripts\python.exe" set "PY=..\..\.venv\Scripts\python.exe"
 if not defined PY set "PY=python"
+if not exist ".comfy_python.txt" echo NOTE: start ComfyUI once so Angelo can record its Python, for the most reliable install.
 
 echo Angelo SAM 3 installer - using Python: %PY%
 "%PY%" --version

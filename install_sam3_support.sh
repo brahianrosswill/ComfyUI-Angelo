@@ -9,12 +9,17 @@
 set -e
 cd "$(dirname "$0")"
 
-# Pick a Python: PYTHON env var, else a venv beside ComfyUI (../../),
-# else `python` on PATH.
+# Pick a Python: PYTHON env var, then the interpreter ComfyUI recorded on
+# its last start (.comfy_python.txt — reliable for any launcher), then a
+# venv beside ComfyUI (../../), then `python` on PATH as a last resort.
 PY="${PYTHON:-}"
+if [ -z "$PY" ] && [ -f ".comfy_python.txt" ]; then PY="$(cat .comfy_python.txt)"; fi
 if [ -z "$PY" ] && [ -x "../../venv/bin/python" ]; then PY="../../venv/bin/python"; fi
 if [ -z "$PY" ] && [ -x "../../.venv/bin/python" ]; then PY="../../.venv/bin/python"; fi
 if [ -z "$PY" ]; then PY="python"; fi
+if [ ! -f ".comfy_python.txt" ]; then
+  echo "NOTE: start ComfyUI once so Angelo can record its Python, for the most reliable install."
+fi
 
 echo "Angelo SAM 3 installer — using Python: $PY"
 "$PY" --version || { echo "Python not found. Set PYTHON to your ComfyUI python and retry."; exit 1; }
