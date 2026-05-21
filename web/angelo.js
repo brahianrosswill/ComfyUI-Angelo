@@ -591,6 +591,31 @@ function attachPreviewCanvas(node) {
     detectRow.appendChild(detBtn);
     node._AngeloDetectBtn = detBtn;
 
+    // Quick-detect presets — selecting one runs SAM 3 immediately with
+    // that concept (does NOT change the text box). Resets to the
+    // placeholder after each pick so the same item can be re-run.
+    const quickSel = document.createElement("select");
+    quickSel.style.cssText = "font-size:11px; padding:2px 4px; border:1px solid #555; "
+        + "border-radius:3px; background:#1a1a1a; color:#ddd; margin-left:2px;";
+    quickSel.title = "Quick-detect a common subject — runs SAM 3 immediately. Doesn't touch the text box.";
+    for (const o of ["Quick…", "Person", "Face", "Eyes", "Hair", "Hands", "Arms",
+                     "Legs", "Torso", "Clothing", "Shoes", "Background", "Sky",
+                     "Building", "Car", "Tree", "Animal", "Water", "Text"]) {
+        const opt = document.createElement("option");
+        opt.value = o;
+        opt.textContent = o;
+        quickSel.appendChild(opt);
+    }
+    quickSel.addEventListener("change", () => {
+        const v = quickSel.value;
+        quickSel.selectedIndex = 0;            // reset to "Quick…"
+        if (v && v !== "Quick…") runDetect(node, v.toLowerCase());
+    });
+    quickSel.addEventListener("pointerdown", (e) => e.stopPropagation());
+    quickSel.addEventListener("mousedown", (e) => e.stopPropagation());
+    detectRow.appendChild(quickSel);
+    node._AngeloDetectQuick = quickSel;
+
     // ===== MODE ROW: the master Sampler/Edit switch, centred up top =====
     const modeWidget = findWidget(node, "mode");
     const modeOptions = (modeWidget && modeWidget.options && modeWidget.options.values)
@@ -1891,8 +1916,12 @@ function syncLoadImageControls(node) {
 // Refine uses the silhouette polygons; Smart Inpaint uses the bbox.
 // =====================================================================
 
-async function runDetect(node) {
-    const text = (node._AngeloDetectText?.value || "").trim();
+async function runDetect(node, conceptOverride) {
+    // conceptOverride (from a quick-select preset) runs that term directly
+    // WITHOUT touching the text box; otherwise use what the user typed.
+    const text = (conceptOverride != null && String(conceptOverride).trim())
+        ? String(conceptOverride).trim()
+        : (node._AngeloDetectText?.value || "").trim();
     if (!text) { _angeloToast("Type what to segment first"); return; }
     const ref = node._AngeloPreviewRef;
     if (!ref || !ref.filename) { _angeloToast("Generate or load an image first"); return; }
