@@ -253,12 +253,11 @@ app.registerExtension({
                 loadIntoCanvas(this, url);
             }
 
-            // Clear the one-shot detection mask widget after the run that
-            // consumed it (safely past graph serialization), so the next
-            // manual click is a normal refine rather than re-using the
-            // confirmed silhouette.
-            const segW = findWidget(this, "seg_polygon");
-            if (segW && String(segW.value || "")) setWidget(segW, "");
+            // NOTE: seg_polygon is intentionally NOT cleared here. It must
+            // persist across runs like stroke_points / rect_points so a
+            // Persistent Mask re-roll keeps using the SAM-detected
+            // silhouette. It's cleared instead by the manual-mask triggers
+            // (a click / paint / rect resets it) — see triggerRefine etc.
 
             // Seed_at_run capture — used by the lock-on-fixed code. ComfyUI's
             // ui message values arrive as 1-element lists (their convention).
@@ -1740,9 +1739,13 @@ function triggerRefine(node, pixelX, pixelY, displayCX, displayCY) {
     setWidget(wy, pixelY);
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
     if (wr) setWidget(wr, false);
-    // Clear stroke_points so a leftover paint stroke from earlier
-    // doesn't bleed into a single-click refine.
+    // Clear stroke_points + seg_polygon so a leftover paint stroke or a
+    // SAM-detected silhouette from earlier doesn't bleed into a single
+    // click refine. (seg_polygon persists across Persistent Mask re-rolls
+    // until a manual action like this resets it.)
     if (wsp) setWidget(wsp, "");
+    const wseg = findWidget(node, "seg_polygon");
+    if (wseg) setWidget(wseg, "");
 
     dbg("queueing workflow (click)", { click_x: wx.value, click_y: wy.value, click_seq: ws.value });
     queuePrompt();
@@ -1769,6 +1772,9 @@ function triggerPaintRefine(node, strokePoints) {
     if (wx) setWidget(wx, compact[0][0]);
     if (wy) setWidget(wy, compact[0][1]);
     if (wr) setWidget(wr, false);
+    // A paint stroke replaces any SAM-detected silhouette.
+    const wseg = findWidget(node, "seg_polygon");
+    if (wseg) setWidget(wseg, "");
 
     dbg("queueing workflow (paint)", { points: compact.length, click_seq: ws.value });
     queuePrompt();
@@ -2196,8 +2202,11 @@ function triggerRectRefine(node, rect) {
     if (wx) setWidget(wx, Math.round((x1 + x2) / 2));
     if (wy) setWidget(wy, Math.round((y1 + y2) / 2));
     if (wr) setWidget(wr, false);
-    // Clear stroke_points so a previous paint stroke can't fall through.
+    // Clear stroke_points + seg_polygon so a previous paint stroke or a
+    // SAM-detected silhouette can't fall through.
     if (wsp) setWidget(wsp, "");
+    const wseg = findWidget(node, "seg_polygon");
+    if (wseg) setWidget(wseg, "");
 
     dbg("queueing workflow (smart inpaint rect)", { x1, y1, x2, y2, click_seq: ws.value });
     queuePrompt();
