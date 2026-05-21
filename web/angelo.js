@@ -598,13 +598,28 @@ function attachPreviewCanvas(node) {
     quickSel.style.cssText = "font-size:11px; padding:2px 4px; border:1px solid #555; "
         + "border-radius:3px; background:#1a1a1a; color:#ddd; margin-left:2px;";
     quickSel.title = "Quick-detect a common subject — runs SAM 3 immediately. Doesn't touch the text box.";
-    for (const o of ["Quick…", "Person", "Face", "Eyes", "Hair", "Hands", "Arms",
-                     "Legs", "Torso", "Clothing", "Shoes", "Background", "Sky",
-                     "Building", "Car", "Tree", "Animal", "Water", "Text"]) {
-        const opt = document.createElement("option");
-        opt.value = o;
-        opt.textContent = o;
-        quickSel.appendChild(opt);
+    // Placeholder first (index 0 — reset target), then grouped presets.
+    const _ph = document.createElement("option");
+    _ph.value = "Quick…"; _ph.textContent = "Quick…";
+    quickSel.appendChild(_ph);
+    const _QUICK_GROUPS = {
+        "People": ["Person", "Face", "Eyes", "Mouth", "Teeth", "Nose", "Ears", "Hair", "Skin", "Beard"],
+        "Body": ["Hands", "Fingers", "Arms", "Legs", "Feet", "Torso"],
+        "Clothing": ["Clothing", "Dress", "Shirt", "Jacket", "Pants", "Shoes", "Hat", "Glasses", "Jewelry", "Bag"],
+        "Animals": ["Animal", "Dog", "Cat", "Bird", "Horse"],
+        "Scene": ["Background", "Sky", "Clouds", "Sun", "Moon", "Water", "Tree", "Grass", "Flowers", "Mountains", "Road"],
+        "Objects": ["Building", "Window", "Door", "Car", "Furniture", "Food", "Bottle", "Phone", "Text", "Logo"],
+    };
+    for (const [group, items] of Object.entries(_QUICK_GROUPS)) {
+        const og = document.createElement("optgroup");
+        og.label = group;
+        for (const it of items) {
+            const opt = document.createElement("option");
+            opt.value = it;
+            opt.textContent = it;
+            og.appendChild(opt);
+        }
+        quickSel.appendChild(og);
     }
     quickSel.addEventListener("change", () => {
         const v = quickSel.value;
