@@ -648,6 +648,36 @@ function attachPreviewCanvas(node) {
     detectRow.appendChild(quickSel);
     node._AngeloDetectQuick = quickSel;
 
+    // Mask grow / shrink — nudges ALL detected masks in/out together, 2px
+    // at a time, so a tight SAM silhouette can be loosened (or a loose one
+    // tightened) before committing. Pure-frontend: offsets the polygons /
+    // bbox the JS already holds; the backend rasterises whatever it gets.
+    detectRow.appendChild(makeSeparator());
+    const maskLabel = document.createElement("span");
+    maskLabel.textContent = "Mask:";
+    maskLabel.style.cssText = "font-size:11px; color:#bbb; padding:0 1px; white-space:nowrap;";
+    detectRow.appendChild(maskLabel);
+
+    const mkGrowBtn = (txt, delta, tip) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = txt;
+        b.title = tip;
+        b.style.cssText = "cursor:pointer; padding:2px 7px; font-size:13px; font-weight:bold; "
+            + "border:1px solid #555; border-radius:3px; background:#2a2a2a; color:#ddd; "
+            + "line-height:1; user-select:none; flex:0 0 auto;";
+        b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); adjustMaskGrow(node, delta); });
+        b.addEventListener("pointerdown", (e) => e.stopPropagation());
+        return b;
+    };
+    detectRow.appendChild(mkGrowBtn("−", -2, "Shrink all detected masks by 2px"));
+    const growReadout = document.createElement("span");
+    growReadout.textContent = "0px";
+    growReadout.style.cssText = "font-size:11px; color:#9cf; min-width:34px; text-align:center; white-space:nowrap;";
+    detectRow.appendChild(growReadout);
+    node._AngeloMaskGrowReadout = growReadout;
+    detectRow.appendChild(mkGrowBtn("+", 2, "Grow all detected masks by 2px"));
+
     // ===== MODE ROW: the master Sampler/Edit switch, centred up top =====
     const modeWidget = findWidget(node, "mode");
     const modeOptions = (modeWidget && modeWidget.options && modeWidget.options.values)
@@ -2137,6 +2167,8 @@ async function runDetect(node, conceptOverride) {
         node._AngeloDetections = dets;
         node._AngeloHoverDet = -1;
         node._AngeloEditedDets = new Set();   // which candidates have been edited
+        node._AngeloMaskGrow = 0;             // each detect starts at no grow
+        _syncMaskGrowReadout(node);
         syncDetectModeButton(node);
         if (!dets.length) {
             // Nothing highlights, so say so where it can be read + acted on.
@@ -2159,6 +2191,8 @@ function clearDetections(node) {
     // Reset the highlight opacity to default so the next detect starts full.
     node._AngeloDetOpacity = 1.0;
     if (node._AngeloDetOpacitySlider) node._AngeloDetOpacitySlider.value = "1";
+    node._AngeloMaskGrow = 0;
+    _syncMaskGrowReadout(node);
     syncDetectModeButton(node);
     redrawCanvasWithOverlays(node);
 }
@@ -2176,7 +2210,7 @@ function _detAtPoint(node, px, py) {
     const dets = node._AngeloDetections || [];
     let best = null, bestArea = Infinity;
     for (const d of dets) {
-        const b = d.bbox;
+        const b = _detBbox(node, d);
         if (!b) continue;
         if (px >= b[0] && px <= b[2] && py >= b[1] && py <= b[3]) {
             const area = Math.max(1, (b[2] - b[0]) * (b[3] - b[1]));
@@ -2197,20 +2231,22 @@ function confirmDetection(node, det) {
     const wrp = findWidget(node, "rect_points");
     const wseg = findWidget(node, "seg_polygon");
     const smart = isSmartInpaintMode(node);
-    const b = det.bbox || [0, 0, 0, 0];
+    // Apply the current Mask grow/shrink to the committed shape (the same
+    // offset that's being drawn), so what you edit matches what you see.
+    const b = _detBbox(node, det) || [0, 0, 0, 0];
     if (wx) setWidget(wx, Math.round((b[0] + b[2]) / 2));
     if (wy) setWidget(wy, Math.round((b[1] + b[3]) / 2));
     if (wr) setWidget(wr, false);
     if (wsp) setWidget(wsp, "");
     if (smart) {
-        // Smart Inpaint: the bbox is the rectangle.
+        // Smart Inpaint: the (grown) bbox is the rectangle.
         if (wrp) setWidget(wrp, JSON.stringify([[
             Math.round(b[0]), Math.round(b[1]), Math.round(b[2]), Math.round(b[3]),
         ]]));
         if (wseg) setWidget(wseg, "");
     } else {
-        // Refine: the silhouette polygons are the mask.
-        if (wseg) setWidget(wseg, JSON.stringify(det.polygons || []));
+        // Refine: the (grown) silhouette polygons are the mask.
+        if (wseg) setWidget(wseg, JSON.stringify(_detPolys(node, det)));
         if (wrp) setWidget(wrp, "");
     }
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
@@ -2223,6 +2259,81 @@ function confirmDetection(node, det) {
     }
     redrawCanvasWithOverlays(node);   // immediate feedback: clicked one turns green
     queuePrompt();
+}
+
+// Offset a closed polygon outward (delta>0) or inward (delta<0) by ~|delta|
+// pixels, perpendicular to its edges. Miter join with a spike clamp; the
+// outward direction is fixed per-vertex via the centroid so winding order
+// doesn't matter. flat = [x0,y0,x1,y1,...] in image-pixel coords.
+function _offsetPolygon(flat, delta) {
+    const n = flat.length >> 1;
+    if (n < 3 || !delta) return flat.slice();
+    const P = [];
+    for (let i = 0; i < n; i++) P.push([flat[2 * i], flat[2 * i + 1]]);
+    let cx = 0, cy = 0;
+    for (const [x, y] of P) { cx += x; cy += y; }
+    cx /= n; cy /= n;
+    const out = new Array(n * 2);
+    for (let i = 0; i < n; i++) {
+        const prev = P[(i - 1 + n) % n], cur = P[i], next = P[(i + 1) % n];
+        let e1x = cur[0] - prev[0], e1y = cur[1] - prev[1];
+        let e2x = next[0] - cur[0], e2y = next[1] - cur[1];
+        const l1 = Math.hypot(e1x, e1y) || 1, l2 = Math.hypot(e2x, e2y) || 1;
+        e1x /= l1; e1y /= l1; e2x /= l2; e2y /= l2;
+        // Unit edge normals (one consistent side); miter = their sum.
+        const n1x = -e1y, n1y = e1x, n2x = -e2y, n2y = e2x;
+        let mx = n1x + n2x, my = n1y + n2y;
+        let ml = Math.hypot(mx, my);
+        if (ml < 1e-6) { mx = n1x; my = n1y; ml = Math.hypot(mx, my) || 1; }
+        mx /= ml; my /= ml;
+        let cosA = Math.abs(mx * n1x + my * n1y);   // cos(half-angle)
+        if (cosA < 0.25) cosA = 0.25;               // clamp miter spike at sharp corners
+        const len = Math.abs(delta) / cosA;
+        // Orient the miter outward (away from centroid), then push out/in.
+        if (mx * (cur[0] - cx) + my * (cur[1] - cy) < 0) { mx = -mx; my = -my; }
+        const s = delta >= 0 ? 1 : -1;
+        out[2 * i] = cur[0] + mx * len * s;
+        out[2 * i + 1] = cur[1] + my * len * s;
+    }
+    return out;
+}
+
+// The detection's polygons / bbox AS DISPLAYED + COMMITTED, with the
+// current mask grow/shrink applied. grow==0 returns the originals.
+function _detPolys(node, det) {
+    const g = node._AngeloMaskGrow || 0;
+    const polys = det.polygons || [];
+    if (!g) return polys;
+    return polys.map((p) => (p && p.length >= 6) ? _offsetPolygon(p, g) : p);
+}
+function _detBbox(node, det) {
+    const b = det.bbox;
+    if (!b) return b;
+    const g = node._AngeloMaskGrow || 0;
+    if (!g) return b;
+    const img = node._AngeloImg;
+    const W = (img && img.naturalWidth) ? img.naturalWidth : 1e9;
+    const H = (img && img.naturalHeight) ? img.naturalHeight : 1e9;
+    return [
+        Math.max(0, b[0] - g), Math.max(0, b[1] - g),
+        Math.min(W, b[2] + g), Math.min(H, b[3] + g),
+    ];
+}
+
+function _syncMaskGrowReadout(node) {
+    const r = node._AngeloMaskGrowReadout;
+    if (!r) return;
+    const g = node._AngeloMaskGrow || 0;
+    r.textContent = (g > 0 ? "+" : "") + g + "px";
+}
+
+// +/- buttons: nudge the grow value and re-draw every highlight together.
+function adjustMaskGrow(node, delta) {
+    if (!node._AngeloDetections || !node._AngeloDetections.length) return;
+    const cur = node._AngeloMaskGrow || 0;
+    node._AngeloMaskGrow = Math.max(-40, Math.min(200, cur + delta));
+    _syncMaskGrowReadout(node);
+    redrawCanvasWithOverlays(node);
 }
 
 // Draw candidate outlines (called from redrawCanvasWithOverlays, image-px ctx).
@@ -2253,14 +2364,14 @@ function drawDetections(node, ctx) {
             ctx.fillStyle = "rgba(80, 200, 255, 0.15)";
         }
         if (smart) {
-            const b = d.bbox;
+            const b = _detBbox(node, d);
             if (b) {
                 ctx.beginPath();
                 ctx.rect(b[0], b[1], b[2] - b[0], b[3] - b[1]);
                 ctx.fill(); ctx.stroke();
             }
         } else {
-            for (const poly of (d.polygons || [])) {
+            for (const poly of _detPolys(node, d)) {
                 if (!poly || poly.length < 6) continue;
                 ctx.beginPath();
                 ctx.moveTo(poly[0], poly[1]);
