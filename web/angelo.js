@@ -2387,17 +2387,24 @@ function _detPolys(node, det) {
     return polys.map((p) => (p && p.length >= 6) ? _offsetPolygon(p, g) : p);
 }
 function _detBbox(node, det) {
-    const b = det.bbox;
-    if (!b) return b;
+    if (!det.bbox) return det.bbox;
     const g = node._AngeloMaskGrow || 0;
-    if (!g) return b;
-    const img = node._AngeloImg;
-    const W = (img && img.naturalWidth) ? img.naturalWidth : 1e9;
-    const H = (img && img.naturalHeight) ? img.naturalHeight : 1e9;
-    return [
-        Math.max(0, b[0] - g), Math.max(0, b[1] - g),
-        Math.min(W, b[2] + g), Math.min(H, b[3] + g),
-    ];
+    let b = det.bbox;
+    if (g) {
+        const img = node._AngeloImg;
+        const W = (img && img.naturalWidth) ? img.naturalWidth : 1e9;
+        const H = (img && img.naturalHeight) ? img.naturalHeight : 1e9;
+        b = [
+            Math.max(0, b[0] - g), Math.max(0, b[1] - g),
+            Math.min(W, b[2] + g), Math.min(H, b[3] + g),
+        ];
+    }
+    // Include any brushed extent so the whole touched shape is hit-testable.
+    const e = det._editBounds;
+    if (e) {
+        b = [Math.min(b[0], e[0]), Math.min(b[1], e[1]), Math.max(b[2], e[2]), Math.max(b[3], e[3])];
+    }
+    return b;
 }
 
 function _syncMaskGrowReadout(node) {
@@ -2458,6 +2465,15 @@ function _brushStamp(det, px, py, radius, subtract) {
     cx.arc(px, py, Math.max(1, radius), 0, Math.PI * 2);
     cx.fill();
     cx.restore();
+    // Grow the hit-box to cover added paint so the whole brushed shape stays
+    // hoverable / clickable even where it extends past the original bbox.
+    if (!subtract) {
+        const nb = [px - radius, py - radius, px + radius, py + radius];
+        const b = det._editBounds;
+        det._editBounds = b
+            ? [Math.min(b[0], nb[0]), Math.min(b[1], nb[1]), Math.max(b[2], nb[2]), Math.max(b[3], nb[3])]
+            : nb;
+    }
 }
 
 // Stamp circles along a segment so a fast drag leaves a continuous stroke.
