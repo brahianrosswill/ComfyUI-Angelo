@@ -136,10 +136,26 @@ def _ensure_model():
         bpe_path = _find_bpe(sam3)
         print(f"[Angelo/SAM3] Building image model (checkpoint={ckpt}, "
               f"bpe={'auto' if not bpe_path else bpe_path})...")
-        if bpe_path:
-            model = build_sam3_image_model(checkpoint_path=ckpt, bpe_path=bpe_path)
-        else:
-            model = build_sam3_image_model(checkpoint_path=ckpt)
+        # Build under a forced float32 default dtype, then hard-cast to fp32.
+        # Some setups leave torch's GLOBAL default dtype at bfloat16; on
+        # torch >= 2.10 that bakes bf16 weights into SAM 3 during the build,
+        # but SAM 3's image processor always feeds an fp32 image — so the
+        # backbone crashes with "mat1 and mat2 must have the same dtype, got
+        # BFloat16 and Float". fp32 is SAM 3's known-good precision (and a
+        # no-op when the default is already fp32). Restore the previous
+        # default afterwards so we don't disturb the rest of ComfyUI.
+        # (Root-caused by reproducing on a torch 2.10.0+cu130 RC venv.)
+        import torch
+        _prev_default_dtype = torch.get_default_dtype()
+        torch.set_default_dtype(torch.float32)
+        try:
+            if bpe_path:
+                model = build_sam3_image_model(checkpoint_path=ckpt, bpe_path=bpe_path)
+            else:
+                model = build_sam3_image_model(checkpoint_path=ckpt)
+        finally:
+            torch.set_default_dtype(_prev_default_dtype)
+        model.float()
         processor = Sam3Processor(model)
         model.processor = processor
         model.eval()
@@ -181,46 +197,6 @@ def _mask_to_polygons(mask_np, min_area=64, epsilon_frac=0.004):
     return polys
 
 
-def _force_dtype(root, dtype):
-    """Cast every floating param/buffer of every nn.Module reachable from
-    `root` to `dtype` — registered children AND plain-attribute sub-modules
-    (e.g. an unregistered `.backbone`) — casting each module's OWN tensors
-    independently so one uncastable sub-module can't abort the rest.
-
-    SAM 3's image backbone ships mixed-precision weights on some stacks (most
-    layers bf16, the odd Linear fp32), and a single top-level `model.float()`
-    can stop short — leaving bf16 activations to hit an fp32 layer. This walks
-    the whole tree and unifies it.
-    """
-    import torch
-
-    seen = set()
-    stack = [root]
-    while stack:
-        m = stack.pop()
-        if not isinstance(m, torch.nn.Module) or id(m) in seen:
-            continue
-        seen.add(id(m))
-        for name, p in list(getattr(m, "_parameters", {}).items()):
-            if p is not None and p.is_floating_point():
-                try:
-                    m._parameters[name] = torch.nn.Parameter(
-                        p.data.to(dtype), requires_grad=p.requires_grad)
-                except Exception:
-                    pass
-        for name, b in list(getattr(m, "_buffers", {}).items()):
-            if b is not None and b.is_floating_point():
-                try:
-                    m._buffers[name] = b.to(dtype)
-                except Exception:
-                    pass
-        for child in m.children():
-            stack.append(child)
-        for v in vars(m).values():
-            if isinstance(v, torch.nn.Module):
-                stack.append(v)
-
-
 def detect_text(pil_image, text, confidence_threshold=0.3, max_detections=20):
     """Run SAM 3 text grounding on a PIL image. Returns a list of
     detections: {"polygons": [[x,y,...], ...], "bbox": [x1,y1,x2,y2],
@@ -238,60 +214,12 @@ def detect_text(pil_image, text, confidence_threshold=0.3, max_detections=20):
         if hasattr(processor, "set_confidence_threshold"):
             processor.set_confidence_threshold(float(confidence_threshold))
 
-        def _forward():
-            st = processor.set_image(pil_image)
-            if text and text.strip():
-                st = processor.set_text_prompt(text.strip(), st)
-            return st
-
-        def _is_dtype_err(err):
-            s = str(err).lower()
-            return "dtype" in s or "mat1 and mat2" in s
-
-        try:
-            state = _forward()
-        except RuntimeError as e:
-            if not _is_dtype_err(e):
-                raise
-            # SAM 3 hit a precision mismatch inside its own backbone
-            # ("BFloat16 and Float") — mixed-precision weights on this torch
-            # build, so bf16 activations meet an fp32 layer. Unify everything
-            # to one dtype and retry with autocast off, bf16 first (the
-            # activations are already bf16 here) then fp32.
-            #
-            # Cast EVERY object the forward might touch — `model`, the
-            # processor's own `model` (the one the trace runs:
-            # processor.model.backbone), and their `.backbone` — because the
-            # processor can hold a different model instance than the one we
-            # built, so casting only our `model` leaves the real backbone
-            # untouched.
-            dev_type = "cuda" if torch.cuda.is_available() else "cpu"
-
-            def _unify(dt):
-                for obj in (model, getattr(processor, "model", None)):
-                    if obj is None:
-                        continue
-                    _force_dtype(obj, dt)
-                    bb = getattr(obj, "backbone", None)
-                    if bb is not None:
-                        _force_dtype(bb, dt)
-
-            last = e
-            for dt in (torch.bfloat16, torch.float32):
-                print(f"[Angelo/SAM3] precision mismatch; unifying model to "
-                      f"{dt} and retrying...")
-                _unify(dt)
-                try:
-                    with torch.autocast(device_type=dev_type, enabled=False):
-                        state = _forward()
-                    last = None
-                    break
-                except RuntimeError as e2:
-                    if not _is_dtype_err(e2):
-                        raise
-                    last = e2
-            if last is not None:
-                raise last
+        # SAM 3 runs in fp32 (forced at build in _ensure_model) and its
+        # processor feeds an fp32 image, so weights and activations agree —
+        # no dtype juggling needed here.
+        state = processor.set_image(pil_image)
+        if text and text.strip():
+            state = processor.set_text_prompt(text.strip(), state)
 
         masks = state.get("masks", None)
         boxes = state.get("boxes", None)
