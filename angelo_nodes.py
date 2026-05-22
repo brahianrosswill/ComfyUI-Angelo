@@ -1042,6 +1042,13 @@ class AngeloRefine:
                 vae, loaded_ref, str(loaded_resize_mode), float(loaded_target_mp)
             )
 
+        # base_from_wired_latent: only the wired-`latent` path carries a
+        # meaningful fingerprint for upstream-change detection. The cache /
+        # loaded-image paths take incoming from history[0], which MUTATES as
+        # the undo stack is capped (the original base is evicted after
+        # _HISTORY_CAP refines), so a fingerprint comparison there is bogus
+        # and would spuriously reset mid-session. See the need_reset note.
+        base_from_wired_latent = False
         if forced_base is not None:
             incoming = forced_base
         elif loaded_active and state is not None and state.get("history"):
@@ -1049,6 +1056,7 @@ class AngeloRefine:
             incoming = state["history"][0]
         elif latent is not None:
             incoming = latent["samples"]
+            base_from_wired_latent = True
         elif state is not None and state.get("history"):
             incoming = state["history"][0]
         else:
@@ -1152,8 +1160,22 @@ class AngeloRefine:
         # latent across upstream re-rolls (the user's pressing Queue
         # specifically because they want a variation of the held region,
         # not a fresh image).
+        #
+        # The fingerprint check ONLY applies when the base is the wired
+        # `latent` input (where a change really does mean "upstream produced
+        # a fresh latent"). When the base comes from the cache / loaded
+        # image, `incoming` is history[0] — which mutates as the undo stack
+        # is capped (_HISTORY_CAP). Comparing against it there would
+        # spuriously reset to a mid-stage latent after enough refines (the
+        # "suddenly reverts to an earlier stage while painting" bug). Those
+        # bases only change via explicit Load / Unload / Reset, all handled
+        # by `reset` / `new_loaded` above — so the fingerprint isn't needed.
         state = _STATE.get(node_id)
-        fingerprint_changed = state is not None and state.get("fingerprint") != incoming_fp
+        fingerprint_changed = (
+            base_from_wired_latent
+            and state is not None
+            and state.get("fingerprint") != incoming_fp
+        )
         need_reset = (
             reset
             or state is None
