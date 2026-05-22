@@ -260,6 +260,23 @@ def _polygons_mask_latent(
     return torch.from_numpy(arr)[None, ...].to(device)
 
 
+def _raster_mask_latent(latent_h, latent_w, png_b64, device):
+    """Decode a base64-PNG touch-up mask (image-pixel resolution, white =
+    masked) into a [1, H, W] latent-space mask. The Detect Shift/Alt brush
+    produces this — a raster handles brushed holes / unions that a polygon
+    silhouette can't. Resized straight to the latent grid (no scale args)."""
+    import base64
+    import io
+    import numpy as np
+    from PIL import Image
+
+    raw = base64.b64decode(png_b64)
+    img = Image.open(io.BytesIO(raw)).convert("L")
+    img = img.resize((latent_w, latent_h), Image.BILINEAR)
+    arr = np.array(img, dtype=np.float32) / 255.0
+    return torch.from_numpy(arr)[None, ...].to(device)
+
+
 def _mask_bbox_latent(mask: torch.Tensor) -> tuple[int, int, int, int] | None:
     """Tight latent-space bbox of non-zero mask values. Returns
     (y_min, y_max, x_min, x_max) or None if the mask is empty.
@@ -938,6 +955,14 @@ class AngeloRefine:
                 # so older saved workflows (which lack it) don't shift their
                 # positional widgets_values; it just defaults to 0.
                 "reroll_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
+
+                # Hidden — the Detect Shift/Alt touch-up brush drives this. A
+                # base64-PNG mask at image resolution (white = masked) that, in
+                # Refine, takes priority over seg_polygon. Lets the user add to
+                # or subtract from (incl. holes) a SAM mask before committing.
+                # Declared LAST so older saved workflows don't shift their
+                # positional widgets_values; defaults to "".
+                "seg_mask_png": ("STRING", {"default": "", "multiline": False}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -1013,6 +1038,7 @@ class AngeloRefine:
         loaded_target_mp=1.5,
         seg_polygon="",
         reroll_seq=0,
+        seg_mask_png="",
         latent=None,
         clip=None,
         unique_id=None,
@@ -1308,12 +1334,18 @@ class AngeloRefine:
                                        device=current.device, dtype=torch.float32)
             else:
                 # Refine mask sources, in priority:
-                #   1. a confirmed segmentation silhouette (SAM 3 / YOLO)
-                #   2. a paint stroke (union of brush circles)
-                #   3. a single click circle
+                #   1. a brushed touch-up raster mask (Detect Shift/Alt brush)
+                #   2. a confirmed segmentation silhouette (SAM 3 / YOLO)
+                #   3. a paint stroke (union of brush circles)
+                #   4. a single click circle
+                raster_png = (seg_mask_png or "").strip()
                 seg_polys = _parse_seg_polygons(seg_polygon)
                 stroke_pts = _parse_stroke_points(stroke_points) if paint_mode else []
-                if seg_polys:
+                if raster_png:
+                    mask = _raster_mask_latent(
+                        latent_h, latent_w, raster_png, current.device,
+                    )
+                elif seg_polys:
                     mask = _polygons_mask_latent(
                         latent_h, latent_w, seg_polys,
                         scale_x, scale_y, current.device,

@@ -741,8 +741,16 @@ function attachPreviewCanvas(node) {
     opRow.appendChild(opLabel);
     opRow.appendChild(opSlider);
 
+    // Touch-up brush hint (the brush is modifier-driven, so flag it here).
+    const brushHint = document.createElement("div");
+    brushHint.textContent = "Refine: Shift-drag = +mask · Alt-drag = −mask";
+    brushHint.style.cssText = "font-size:9px; color:#9aa; white-space:nowrap; text-align:center;";
+    brushHint.title = "In Refine, hold Shift and drag on the preview to grow the mask you start over, "
+        + "or Alt-drag to carve it back (holes allowed). Brush size = Click R. Then click the candidate to apply.";
+
     detectPanel.appendChild(cancelDetectBtn);
     detectPanel.appendChild(opRow);
+    detectPanel.appendChild(brushHint);
     modeRow.appendChild(detectPanel);
     node._AngeloCancelDetectBtn = cancelDetectBtn;
     node._AngeloDetectPanel = detectPanel;
@@ -1123,8 +1131,28 @@ function attachPreviewCanvas(node) {
         if (!p) return;
         node._AngeloHover = { x: p.cssX, y: p.cssY };
 
-        // Detection select mode: highlight the candidate under the cursor.
+        // Detection select mode.
         if (node._AngeloDetections && node._AngeloDetections.length) {
+            // Active touch-up stroke → extend the brush along the drag.
+            if (node._AngeloTouchup) {
+                const tu = node._AngeloTouchup;
+                _brushLine(tu.det, tu.last, [p.pixelX, p.pixelY], _brushRadius(node), tu.subtract);
+                tu.last = [p.pixelX, p.pixelY];
+                redrawCanvasWithOverlays(node);
+                return;
+            }
+            // Brush preview while Shift/Alt is held (Refine only).
+            const brushKey = (event.shiftKey || event.altKey)
+                && !isSmartInpaintMode(node) && !isSmartGuidedInpaintMode(node);
+            if (brushKey) {
+                node._AngeloBrushPreview = { x: p.pixelX, y: p.pixelY, r: _brushRadius(node), subtract: event.altKey };
+                canvas.style.cursor = "crosshair";
+                node._AngeloHoverDet = -1;
+                redrawCanvasWithOverlays(node);
+                return;
+            }
+            if (node._AngeloBrushPreview) node._AngeloBrushPreview = null;
+            // Otherwise highlight the candidate under the cursor.
             const det = _detAtPoint(node, p.pixelX, p.pixelY);
             const idx = det ? node._AngeloDetections.indexOf(det) : -1;
             canvas.style.cursor = idx >= 0 ? "pointer" : "default";
@@ -1155,6 +1183,7 @@ function attachPreviewCanvas(node) {
 
     canvas.addEventListener("pointerleave", () => {
         node._AngeloHover = null;
+        if (node._AngeloBrushPreview) node._AngeloBrushPreview = null;
         // IMPORTANT: do NOT cancel an active paint stroke here. With
         // pointer capture set on pointerdown, we keep receiving move/up
         // events even when the cursor leaves the canvas — long strokes
@@ -1174,8 +1203,27 @@ function attachPreviewCanvas(node) {
     canvas.addEventListener("pointerdown", (event) => {
         if (event.button !== 0) return;
         // Detection select mode owns the canvas — let the click confirm a
-        // candidate; don't start a paint stroke or rectangle drag.
-        if (node._AngeloDetections && node._AngeloDetections.length) return;
+        // candidate; don't start a paint stroke or rectangle drag. EXCEPT a
+        // Shift/Alt drag, which is the touch-up brush (Refine only): Shift
+        // adds to the first-overlapped candidate's mask, Alt subtracts.
+        if (node._AngeloDetections && node._AngeloDetections.length) {
+            const brushKey = (event.shiftKey || event.altKey)
+                && !isSmartInpaintMode(node) && !isSmartGuidedInpaintMode(node);
+            if (brushKey) {
+                const pp = eventToImagePixel(event);
+                if (!pp) return;
+                const target = _pickTouchupTarget(node, pp.pixelX, pp.pixelY);
+                if (!target) return;
+                try { canvas.setPointerCapture(event.pointerId); node._AngeloPointerId = event.pointerId; } catch (e) { /* noop */ }
+                const subtract = event.altKey;
+                _ensureEditMask(node, target);
+                _brushStamp(target, pp.pixelX, pp.pixelY, _brushRadius(node), subtract);
+                node._AngeloTouchup = { det: target, subtract, last: [pp.pixelX, pp.pixelY] };
+                node._AngeloBrushPreview = null;
+                redrawCanvasWithOverlays(node);
+            }
+            return;
+        }
         // Smart Guided Inpaint has no canvas interaction at all — the
         // location comes from the dropdown, the run from the button.
         if (isSmartGuidedInpaintMode(node)) return;
@@ -1258,13 +1306,26 @@ function attachPreviewCanvas(node) {
         redrawCanvasWithOverlays(node);
     }
 
+    function endTouchup() {
+        if (!node._AngeloTouchup) return;
+        node._AngeloTouchup = null;
+        if (node._AngeloPointerId !== undefined) {
+            try { canvas.releasePointerCapture(node._AngeloPointerId); }
+            catch (e) { /* already released */ }
+            node._AngeloPointerId = undefined;
+        }
+        redrawCanvasWithOverlays(node);
+    }
+
     canvas.addEventListener("pointerup", (event) => {
         if (event.button !== 0) return;
-        if (node._AngeloDraggingRect) endRectDrag();
+        if (node._AngeloTouchup) endTouchup();
+        else if (node._AngeloDraggingRect) endRectDrag();
         else endPaintStroke(event);
     });
     canvas.addEventListener("pointercancel", (event) => {
-        if (node._AngeloDraggingRect) endRectDrag();
+        if (node._AngeloTouchup) endTouchup();
+        else if (node._AngeloDraggingRect) endRectDrag();
         else endPaintStroke(event);
     });
 
@@ -1276,6 +1337,8 @@ function attachPreviewCanvas(node) {
         // edits. Empty-space clicks do nothing (so you can't accidentally
         // exit mid-batch) — leave via Cancel Detect / Esc / Space.
         if (node._AngeloDetections && node._AngeloDetections.length) {
+            // Shift/Alt click is the touch-up brush, not a confirm.
+            if (event.shiftKey || event.altKey) return;
             const p = eventToImagePixel(event);
             const det = p ? _detAtPoint(node, p.pixelX, p.pixelY) : null;
             if (det) confirmDetection(node, det);
@@ -1962,6 +2025,8 @@ function triggerRefine(node, pixelX, pixelY, displayCX, displayCY) {
     if (wsp) setWidget(wsp, "");
     const wseg = findWidget(node, "seg_polygon");
     if (wseg) setWidget(wseg, "");
+    const wmaskpng = findWidget(node, "seg_mask_png");
+    if (wmaskpng) setWidget(wmaskpng, "");
 
     dbg("queueing workflow (click)", { click_x: wx.value, click_y: wy.value, click_seq: ws.value });
     queuePrompt();
@@ -1991,6 +2056,8 @@ function triggerPaintRefine(node, strokePoints) {
     // A paint stroke replaces any SAM-detected silhouette.
     const wseg = findWidget(node, "seg_polygon");
     if (wseg) setWidget(wseg, "");
+    const wmaskpng = findWidget(node, "seg_mask_png");
+    if (wmaskpng) setWidget(wmaskpng, "");
 
     dbg("queueing workflow (paint)", { points: compact.length, click_seq: ws.value });
     queuePrompt();
@@ -2185,9 +2252,11 @@ async function runDetect(node, conceptOverride) {
 
 function clearDetections(node) {
     if (!node._AngeloDetections) return;
-    node._AngeloDetections = null;
+    node._AngeloDetections = null;   // candidate objects (+ their _editMask) drop here
     node._AngeloHoverDet = -1;
     node._AngeloEditedDets = null;
+    node._AngeloTouchup = null;
+    node._AngeloBrushPreview = null;
     // Reset the highlight opacity to default so the next detect starts full.
     node._AngeloDetOpacity = 1.0;
     if (node._AngeloDetOpacitySlider) node._AngeloDetOpacitySlider.value = "1";
@@ -2230,6 +2299,7 @@ function confirmDetection(node, det) {
     const wsp = findWidget(node, "stroke_points");
     const wrp = findWidget(node, "rect_points");
     const wseg = findWidget(node, "seg_polygon");
+    const wmask = findWidget(node, "seg_mask_png");
     const smart = isSmartInpaintMode(node);
     // Apply the current Mask grow/shrink to the committed shape (the same
     // offset that's being drawn), so what you edit matches what you see.
@@ -2239,14 +2309,24 @@ function confirmDetection(node, det) {
     if (wr) setWidget(wr, false);
     if (wsp) setWidget(wsp, "");
     if (smart) {
-        // Smart Inpaint: the (grown) bbox is the rectangle.
+        // Smart Inpaint: the (grown) bbox is the rectangle. (No touch-up
+        // brush in Smart Inpaint — it's Refine-only.)
         if (wrp) setWidget(wrp, JSON.stringify([[
             Math.round(b[0]), Math.round(b[1]), Math.round(b[2]), Math.round(b[3]),
         ]]));
         if (wseg) setWidget(wseg, "");
+        if (wmask) setWidget(wmask, "");
+    } else if (det._editMask && wmask) {
+        // Refine + brushed: send the raster edit-mask (handles brushed holes /
+        // additions a polygon can't), and clear the polygon path.
+        const png = det._editMask.toDataURL("image/png").split(",")[1] || "";
+        setWidget(wmask, png);
+        if (wseg) setWidget(wseg, "");
+        if (wrp) setWidget(wrp, "");
     } else {
         // Refine: the (grown) silhouette polygons are the mask.
         if (wseg) setWidget(wseg, JSON.stringify(_detPolys(node, det)));
+        if (wmask) setWidget(wmask, "");
         if (wrp) setWidget(wrp, "");
     }
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
@@ -2336,6 +2416,106 @@ function adjustMaskGrow(node, delta) {
     redrawCanvasWithOverlays(node);
 }
 
+// ===== Touch-up brush (Refine only) — Shift-drag adds to a detected mask,
+//       Alt-drag subtracts (holes allowed). Once brushed, a detection holds
+//       a raster edit-mask (`_editMask`, an offscreen canvas at image res,
+//       white = masked) that is its source of truth for display + commit. =====
+
+function _brushRadius(node) {
+    const w = findWidget(node, "click_radius");
+    return Math.max(2, (w && Number(w.value)) || 96);
+}
+
+// Lazily promote a detection to a raster edit-mask, seeded from its current
+// (grown) silhouette so brushing starts from exactly what's on screen.
+function _ensureEditMask(node, det) {
+    if (det._editMask) return det._editMask;
+    const img = node._AngeloImg;
+    const W = (img && img.naturalWidth) || 512;
+    const H = (img && img.naturalHeight) || 512;
+    const c = document.createElement("canvas");
+    c.width = W; c.height = H;
+    const cx = c.getContext("2d");
+    cx.fillStyle = "#fff";
+    for (const poly of _detPolys(node, det)) {
+        if (!poly || poly.length < 6) continue;
+        cx.beginPath();
+        cx.moveTo(poly[0], poly[1]);
+        for (let k = 2; k < poly.length - 1; k += 2) cx.lineTo(poly[k], poly[k + 1]);
+        cx.closePath();
+        cx.fill();
+    }
+    det._editMask = c;
+    return c;
+}
+
+function _brushStamp(det, px, py, radius, subtract) {
+    const cx = det._editMask.getContext("2d");
+    cx.save();
+    cx.globalCompositeOperation = subtract ? "destination-out" : "source-over";
+    cx.fillStyle = "#fff";
+    cx.beginPath();
+    cx.arc(px, py, Math.max(1, radius), 0, Math.PI * 2);
+    cx.fill();
+    cx.restore();
+}
+
+// Stamp circles along a segment so a fast drag leaves a continuous stroke.
+function _brushLine(det, a, b, radius, subtract) {
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const dist = Math.hypot(dx, dy);
+    const n = Math.max(1, Math.ceil(dist / Math.max(1, radius * 0.4)));
+    for (let i = 1; i <= n; i++) {
+        const t = i / n;
+        _brushStamp(det, a[0] + dx * t, a[1] + dy * t, radius, subtract);
+    }
+}
+
+// Which candidate a brush stroke acts on: the one under the cursor (smallest
+// bbox), else the nearest by bbox-centre so a stroke starting just outside a
+// mask still attaches to it.
+function _pickTouchupTarget(node, px, py) {
+    const dets = node._AngeloDetections || [];
+    if (!dets.length) return null;
+    const hit = _detAtPoint(node, px, py);
+    if (hit) return hit;
+    let best = null, bestD = Infinity;
+    for (const d of dets) {
+        const b = _detBbox(node, d);
+        if (!b) continue;
+        const dxc = (b[0] + b[2]) / 2 - px, dyc = (b[1] + b[3]) / 2 - py;
+        const dist = Math.hypot(dxc, dyc);
+        if (dist < bestD) { bestD = dist; best = d; }
+    }
+    return best;
+}
+
+// Reusable scratch canvas for tinting a raster edit-mask in a candidate's
+// colour before compositing it onto the overlay.
+let _angeloScratch = null;
+function _getScratch(w, h) {
+    if (!_angeloScratch) _angeloScratch = document.createElement("canvas");
+    if (_angeloScratch.width !== w) _angeloScratch.width = w;
+    if (_angeloScratch.height !== h) _angeloScratch.height = h;
+    return _angeloScratch;
+}
+function _drawTintedMask(ctx, det, color, fillAlpha) {
+    const m = det._editMask;
+    const W = m.width, H = m.height;
+    const s = _getScratch(W, H);
+    const sx = s.getContext("2d");
+    sx.clearRect(0, 0, W, H);
+    sx.globalCompositeOperation = "source-over";
+    sx.fillStyle = color;
+    sx.fillRect(0, 0, W, H);
+    sx.globalCompositeOperation = "destination-in";
+    sx.drawImage(m, 0, 0);
+    const prev = ctx.globalAlpha;
+    ctx.globalAlpha = prev * fillAlpha;
+    ctx.drawImage(s, 0, 0, W, H);
+    ctx.globalAlpha = prev;
+}
+
 // Draw candidate outlines (called from redrawCanvasWithOverlays, image-px ctx).
 function drawDetections(node, ctx) {
     const dets = node._AngeloDetections;
@@ -2349,21 +2529,28 @@ function drawDetections(node, ctx) {
     dets.forEach((d, i) => {
         const hot = (i === node._AngeloHoverDet);
         const done = edited && edited.has(i);
+        let tint;   // solid colour for the raster-mask fill
         if (hot) {
             ctx.lineWidth = 4;
             ctx.strokeStyle = "rgba(255, 220, 80, 1.0)";
             ctx.fillStyle = "rgba(255, 220, 80, 0.25)";
+            tint = "rgb(255, 220, 80)";
         } else if (done) {
             // already edited this session — green so the user can track progress
             ctx.lineWidth = 2;
             ctx.strokeStyle = "rgba(90, 220, 120, 0.95)";
             ctx.fillStyle = "rgba(90, 220, 120, 0.18)";
+            tint = "rgb(90, 220, 120)";
         } else {
             ctx.lineWidth = 2;
             ctx.strokeStyle = "rgba(80, 200, 255, 0.9)";
             ctx.fillStyle = "rgba(80, 200, 255, 0.15)";
+            tint = "rgb(80, 200, 255)";
         }
-        if (smart) {
+        if (!smart && d._editMask) {
+            // Brushed candidate: its raster edit-mask is the source of truth.
+            _drawTintedMask(ctx, d, tint, 0.30);
+        } else if (smart) {
             const b = _detBbox(node, d);
             if (b) {
                 ctx.beginPath();
@@ -2381,6 +2568,19 @@ function drawDetections(node, ctx) {
             }
         }
     });
+
+    // Touch-up brush preview — a circle at the cursor while Shift/Alt is held
+    // (green = add, red = subtract).
+    const bp = node._AngeloBrushPreview;
+    if (bp) {
+        ctx.globalAlpha = (typeof node._AngeloDetOpacity === "number") ? node._AngeloDetOpacity : 1;
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = bp.subtract ? "rgba(255, 90, 90, 0.95)" : "rgba(90, 230, 130, 0.95)";
+        ctx.fillStyle = bp.subtract ? "rgba(255, 90, 90, 0.12)" : "rgba(90, 230, 130, 0.12)";
+        ctx.beginPath();
+        ctx.arc(bp.x, bp.y, bp.r, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+    }
     ctx.restore();
 }
 
@@ -2575,6 +2775,8 @@ function triggerRectRefine(node, rect) {
     if (wsp) setWidget(wsp, "");
     const wseg = findWidget(node, "seg_polygon");
     if (wseg) setWidget(wseg, "");
+    const wmaskpng = findWidget(node, "seg_mask_png");
+    if (wmaskpng) setWidget(wmaskpng, "");
 
     dbg("queueing workflow (smart inpaint rect)", { x1, y1, x2, y2, click_seq: ws.value });
     queuePrompt();
@@ -3223,6 +3425,8 @@ function hideMechanicalWidgets(node) {
         "loaded_image", "loaded_image_seq", "loaded_resize_mode", "loaded_target_mp",
         // Detect (SAM 3 / YOLO) — driven by the Detect row + click-confirm
         "seg_polygon",
+        // Detect touch-up brush — base64 raster mask
+        "seg_mask_png",
         // Re-roll button — bumps to re-run the last edit with a new seed
         "reroll_seq",
         // Toolbar-driven (visible via the bar above the canvas)
