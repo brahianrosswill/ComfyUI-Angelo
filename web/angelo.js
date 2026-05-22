@@ -2549,7 +2549,18 @@ function drawDetections(node, ctx) {
         }
         if (!smart && d._editMask) {
             // Brushed candidate: its raster edit-mask is the source of truth.
-            _drawTintedMask(ctx, d, tint, 0.30);
+            // A raster has no outline to thicken on hover like the polygon
+            // candidates, so instead brighten the fill + add a glow so the
+            // hovered one still pops clearly.
+            if (hot) {
+                ctx.save();
+                ctx.shadowColor = tint;
+                ctx.shadowBlur = 16;
+                _drawTintedMask(ctx, d, tint, 0.55);
+                ctx.restore();
+            } else {
+                _drawTintedMask(ctx, d, tint, 0.30);
+            }
         } else if (smart) {
             const b = _detBbox(node, d);
             if (b) {
