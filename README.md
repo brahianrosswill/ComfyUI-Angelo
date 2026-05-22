@@ -307,6 +307,10 @@ Your **Area Prompt** applies to whatever candidate you click (toggle it on in Re
 - A **highlight-opacity slider** — drag it down to fade the overlays and inspect the edges of what you just generated; candidates stay clickable, and it resets to full when you exit.
 - **Conf** (in the Detect row) tunes the match threshold (≈0.2–0.3 finds more / fainter matches).
 
+**Tidying up a detection.** SAM is usually close but not perfect — two tools fix it without re-detecting:
+- **Mask `[−] / [+]`** (after the Quick Detect dropdown) grows or shrinks **every** detected mask together, 2px at a time — handy when a silhouette is a touch tight or loose all over. The number shows the current offset; it resets on each new detect.
+- **Touch-up brush (Refine only).** Hold **Shift** and drag on the preview to **add** to the mask you start over (e.g. pull in a missed chunk of hair); hold **Alt** and drag to **subtract** — including punching a hole right in the middle. The brush size is your **Click R**, with a live green (add) / red (subtract) preview, and it works whether or not Paint Mode is on. Then click the candidate to apply the edited shape. (Brushing freezes that candidate's shape, so do any +/− grow first.)
+
 **While it works** a *"Loading SAM 3…"* overlay covers the preview — the **first** Detect of a session builds and caches the model (several seconds), so this is just busy feedback rather than a frozen-looking canvas. It clears itself the moment results come back; if a request ever hangs, a **✕** on the overlay closes it manually. Anything you need to read or act on — *no matches*, a bad query, or the *SAM 3 not installed* prompt — shows as a persistent in-app message bar you dismiss yourself, never a toast that flashes past.
 
 **It runs in latent space.** In standard **Refine** (Xtra-Fine off), the edit is a pure latent-space noise-mask inpaint — everything outside the silhouette stays bit-exact, with no VAE round-trip. SAM 3 runs on the decoded preview only to *produce* the shape, which is rasterised down into a latent mask. (Xtra-Fine and Smart Inpaint deliberately use the pixel-space VAE round-trip, as elsewhere.)
