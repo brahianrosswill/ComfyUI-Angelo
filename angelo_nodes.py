@@ -92,6 +92,44 @@ _GUIDED_LOCATION_PREFIXES = {
 }
 
 
+def _model_compute_dtype(model):
+    """Best-effort float dtype the diffusion model computes in, used to cast
+    Angelo-built `reference_latents` so they match the model and don't trip
+    "mat1 and mat2 must have the same dtype" on stacks where the conditioning
+    latent isn't auto-cast.
+
+    Safe by construction — returns None (→ caller leaves the tensor as-is,
+    i.e. current behaviour) whenever the dtype can't be confidently
+    determined OR is an fp8 *weight* dtype (where the real compute dtype is
+    the manual-cast dtype, not the weights'). When it does return a dtype,
+    it's the same one the model would have cast the latent to internally, so
+    casting is a no-op for setups that already work.
+    """
+    bm = getattr(model, "model", None)
+    if bm is None:
+        return None
+    dt = getattr(bm, "manual_cast_dtype", None)   # set when weights are fp8
+    if dt is None:
+        try:
+            dt = bm.get_dtype()
+        except Exception:
+            return None
+    if dt is None or "float8" in str(dt):
+        return None
+    return dt
+
+
+def _as_reference_latent(latent: torch.Tensor, model) -> torch.Tensor:
+    """Clone `latent` for use as a reference_latents conditioning value,
+    cast to the model's compute dtype when it can be determined (see
+    _model_compute_dtype). No-op clone otherwise."""
+    ref = latent.clone()
+    dt = _model_compute_dtype(model)
+    if dt is not None and ref.dtype != dt:
+        ref = ref.to(dt)
+    return ref
+
+
 def _latent_fingerprint(latent: torch.Tensor) -> str:
     """Quick non-cryptographic fingerprint of an incoming latent.
 
@@ -473,7 +511,7 @@ def _refine_with_fine_upscaling(
     # CFG>1 samplers to steer AWAY from the reference scene. Non-edit
     # models ignore the field, so this is harmless on any checkpoint.
     if inpainting_mode == "Smart Inpaint":
-        reference_latent = latent_up.clone()
+        reference_latent = _as_reference_latent(latent_up, model)
         positive = node_helpers.conditioning_set_values(
             positive, {"reference_latents": [reference_latent]}, append=True,
         )
@@ -1396,7 +1434,7 @@ class AngeloRefine:
             #   change. POSITIVE ONLY (negative reference would steer
             #   CFG>1 samplers away from the scene).
             if inpainting_mode == "Smart Guided Inpaint":
-                reference_latent = refine_source.clone()
+                reference_latent = _as_reference_latent(refine_source, model)
                 refine_positive = node_helpers.conditioning_set_values(
                     refine_positive, {"reference_latents": [reference_latent]}, append=True,
                 )
