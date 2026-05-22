@@ -254,18 +254,33 @@ def detect_text(pil_image, text, confidence_threshold=0.3, max_detections=20):
             if not _is_dtype_err(e):
                 raise
             # SAM 3 hit a precision mismatch inside its own backbone
-            # ("BFloat16 and Float") — mixed-precision weights / autocast on
-            # this torch build, so bf16 activations meet an fp32 layer.
-            # Unify the WHOLE model to one dtype (reaching every sub-module,
-            # registered or not) and retry with autocast off. Try bf16 first
-            # (the activations are already bf16 here), then fp32. Whichever
-            # succeeds persists on the cached model for later detects.
+            # ("BFloat16 and Float") — mixed-precision weights on this torch
+            # build, so bf16 activations meet an fp32 layer. Unify everything
+            # to one dtype and retry with autocast off, bf16 first (the
+            # activations are already bf16 here) then fp32.
+            #
+            # Cast EVERY object the forward might touch — `model`, the
+            # processor's own `model` (the one the trace runs:
+            # processor.model.backbone), and their `.backbone` — because the
+            # processor can hold a different model instance than the one we
+            # built, so casting only our `model` leaves the real backbone
+            # untouched.
             dev_type = "cuda" if torch.cuda.is_available() else "cpu"
+
+            def _unify(dt):
+                for obj in (model, getattr(processor, "model", None)):
+                    if obj is None:
+                        continue
+                    _force_dtype(obj, dt)
+                    bb = getattr(obj, "backbone", None)
+                    if bb is not None:
+                        _force_dtype(bb, dt)
+
             last = e
             for dt in (torch.bfloat16, torch.float32):
                 print(f"[Angelo/SAM3] precision mismatch; unifying model to "
                       f"{dt} and retrying...")
-                _force_dtype(model, dt)
+                _unify(dt)
                 try:
                     with torch.autocast(device_type=dev_type, enabled=False):
                         state = _forward()
