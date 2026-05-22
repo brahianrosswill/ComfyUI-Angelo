@@ -1207,6 +1207,17 @@ class AngeloRefine:
             if len(state["history"]) > 1:
                 state["history"].pop()
             state["undo_seq"] = undo_seq
+            # Undo is a PURE restore — pop the cached latent and decode it.
+            # It must NEVER re-sample, or it would produce a different image
+            # than the one being restored. Absorb the current click_seq so
+            # the new-click gate below stays False on this run. This is
+            # load-bearing because the Persistent Mask queue hook bumps
+            # click_seq on EVERY queue, including the Undo button's — without
+            # this, an undo while Persistent Mask is on would look like a new
+            # click and re-run the last mask with the (since-randomized) seed,
+            # restoring the WRONG result. (Harmless no-op when the hook didn't
+            # bump it.)
+            state["click_seq"] = click_seq
 
         # ===== Re-roll: redo the most recent edit with a fresh seed =====
         # The Re-roll button bumps reroll_seq (and sets a new seed) without
