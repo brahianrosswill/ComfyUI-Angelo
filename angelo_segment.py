@@ -197,9 +197,34 @@ def detect_text(pil_image, text, confidence_threshold=0.3, max_detections=20):
         model.to(load_device)
         if hasattr(processor, "set_confidence_threshold"):
             processor.set_confidence_threshold(float(confidence_threshold))
-        state = processor.set_image(pil_image)
-        if text and text.strip():
-            state = processor.set_text_prompt(text.strip(), state)
+
+        def _forward():
+            st = processor.set_image(pil_image)
+            if text and text.strip():
+                st = processor.set_text_prompt(text.strip(), st)
+            return st
+
+        try:
+            state = _forward()
+        except RuntimeError as e:
+            msg = str(e).lower()
+            if "dtype" not in msg and "mat1 and mat2" not in msg:
+                raise
+            # SAM 3 itself hit a precision mismatch inside its backbone
+            # (e.g. "BFloat16 and Float") — bf16 activations meeting fp32
+            # weights, which some torch builds produce via autocast or
+            # mixed-precision weights. Force the model to a single fp32 dtype
+            # and retry with autocast OFF so weights + activations agree. The
+            # cast persists on the cached model, so later detects stay fp32.
+            print(f"[Angelo/SAM3] precision mismatch ({e}); "
+                  f"retrying in fp32 with autocast disabled...")
+            try:
+                model.float()
+            except Exception:
+                pass
+            dev_type = "cuda" if torch.cuda.is_available() else "cpu"
+            with torch.autocast(device_type=dev_type, enabled=False):
+                state = _forward()
 
         masks = state.get("masks", None)
         boxes = state.get("boxes", None)
