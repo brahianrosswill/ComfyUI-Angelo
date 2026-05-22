@@ -45,8 +45,8 @@ Angelo collapses that into:
 - **Toggle Xtra-Fine** to refine small regions at much higher effective resolution (the ADetailer move, but with full prompt control).
 - **Smart Inpaint** — drag a rectangle and add brand-new content with an edit model (FLUX 2 Klein etc.).
 - **Smart Guided Inpaint** — no drawing at all: pick a location from a dropdown ("top left", "center", …) + describe what to add, and the edit model places it.
-- **Detect** a region by *describing* it (optional SAM 3) — type "the face", click the highlight, and it masks the silhouette for you. No painting.
-- **Toggle Persistent Mask** + press Queue repeatedly to generate variations of the same region.
+- **Detect** a region by *describing* it (optional SAM 3) — type "the face", click the highlight, and it masks the silhouette for you. No painting. Nudge the mask in/out, or Shift/Alt-drag to touch it up by hand.
+- **Re-roll** the last edit with a fresh seed on the same mask + original image, or **toggle Persistent Mask** to keep evolving a region over repeated Queues.
 - **Undo** to roll back the last refine.
 
 All in one node. All without re-queueing the whole workflow manually for each fix.
@@ -144,7 +144,7 @@ The toolbar holds everything — there are no native widget rows. Top to bottom,
   [Steps] [CFG] [Sampler ▾] [Sched ▾]            ← shared generation config (always active)
   [Smpl Seed] [Smpl Ctrl ▾] [Smpl Denoise]       ← base-gen seed (greys in Edit Mode)
  ─────────────────────────────────────────
-  [Reset] [Undo] | [Persistent Mask] [Area Prompt] [Paint Mode] [Xtra-Fine] | [Inpaint ▾]
+  [Reset] [Undo] [Re-roll] | [Persistent Mask] [Area Prompt] [Paint Mode] [Xtra-Fine] | [Inpaint ▾]
   [Click R] [Feather] [Denoise] [Seed] [Ctrl ▾] | [MP] [Max] [Method ▾]    ← edit block (greys in Sampler Mode)
 ```
 
@@ -164,7 +164,8 @@ The **Mode** switch sits centred up top. Below it, the generation block (always 
 |---|---|
 | **Reset** | Discard cached refinements + history, start fresh from the Sampler-Mode base |
 | **Undo** | Pop the most recent refine off the history stack (up to 10 deep) |
-| **Persistent Mask** | Snapshot the current mask. Hit Queue repeatedly to get variations of just that region (combine with `Ctrl=randomize`). Locked OFF in Smart Guided Inpaint (no mask) |
+| **Re-roll** | Redo the most recent edit with a fresh seed on the **same mask + same starting image**, replacing the last attempt — cycle seeds on one edit without reset → re-mask → rerun. Works for click / paint / rectangle / detected masks |
+| **Persistent Mask** | Hold the last mask, then hit Queue repeatedly to keep refining that region on the **latest** result — each press builds further, so you can gradually morph it (pair with `Ctrl=randomize`). For variations on the *original* image instead, use **Re-roll**. Locked OFF in Smart Guided Inpaint (no mask) |
 | **Area Prompt** | Refine with the Area Prompt text typed in the box above the canvas (encoded with the connected `CLIP`) instead of the main prompt. Requires a `CLIP` input + non-empty text. The box only appears when this is ON. Forced ON in both Smart modes |
 | **Paint Mode** | Hold + drag to paint a freeform stroke as the mask, instead of single-circle clicks (Refine only) |
 | **Xtra-Fine** | Crop the painted region, upscale via VAE + image upscale, refine at high effective resolution, composite back. ADetailer-style. Forced ON in Smart Inpaint, OFF in Smart Guided Inpaint |
@@ -213,17 +214,20 @@ The result: a face that was 64 latent units gets refined at ~1000 latent units (
 
 In short: Xtra-Fine is what makes *small* fixes possible at all, but it can't conjure resolution from nothing — give it a crop that enlarges to a few hundred pixels minimum.
 
-## Persistent Mask (re-roll the same region)
+## Re-roll vs Persistent Mask (iterating on a region)
 
-Toggle on, then hit the standard ComfyUI Queue button repeatedly. Each press refines the same masked region with a fresh seed (if `Ctrl=randomize`) or the same seed (if `Ctrl=fixed`).
+Two complementary ways to keep working a region without re-masking:
 
-The source latent is **snapshotted** at the moment Persistent Mask starts iterating, so variations are real — every Queue starts from the same base, not from the previous variation. This means:
+**Re-roll** (button, next to Undo) redoes your most recent edit with a fresh seed on the **same mask and the same starting image**, swapping the result in place of the last attempt. Mash it to cycle seeds on one edit until you like a result — it doesn't stack on top of itself. Works for click, paint, rectangle and detected masks. (It does this by popping the last attempt, so `Undo` afterwards still steps back through your history as expected.)
 
-- `Ctrl=fixed` + Queue, Queue, Queue → **same** variation every time (idempotent)
-- `Ctrl=randomize` + Queue, Queue, Queue → **N different variations** of the same base
-- `Ctrl=increment` + Queue, Queue, Queue → predictable progression
+**Persistent Mask** (toggle) holds the last mask; each press of the standard ComfyUI Queue button re-runs it on the **latest** result, so the region builds *further* every time — use it to gradually morph something into something else over several presses:
 
-A new click while Persistent Mask is on commits a new region — the post-click result becomes the new snapshot.
+- `Ctrl=randomize` + Queue, Queue, Queue → a varied walk, each step building on the last
+- `Ctrl=fixed` + Queue, Queue, Queue → push the same direction deterministically
+
+A new click while Persistent Mask is on commits a new region to keep building from.
+
+In short: **Re-roll** = "try this edit again on the original"; **Persistent Mask** = "keep evolving from where I am now."
 
 ## Inpainting Mode (Refine / Smart Inpaint / Smart Guided Inpaint)
 
