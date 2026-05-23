@@ -277,6 +277,26 @@ app.registerExtension({
             if (this.size[1] < min[1]) this.size[1] = min[1];
         };
 
+        // --- Right-click node menu: Open / Copy / Paste image (#7). Covers
+        //     right-clicks on the litegraph-rendered node body / title; the
+        //     DOM preview canvas has its own contextmenu handler too. ---
+        const origGetExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
+        nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
+            if (origGetExtraMenuOptions) origGetExtraMenuOptions.apply(this, arguments);
+            const node = this;
+            const hasImg = !!node._AngeloImg;
+            options.unshift(
+                { content: "Angelo: open image in new tab", disabled: !hasImg,
+                  callback: () => _angeloOpenImageInTab(node) },
+                { content: "Angelo: copy image", disabled: !hasImg,
+                  callback: () => _angeloCopyImageToClipboard(node) },
+                { content: "Angelo: paste image (load as base)",
+                  callback: () => _angeloPasteImageFromClipboard(node) },
+                null,
+            );
+            return options;
+        };
+
         // --- onExecuted: receive the new preview URL, draw into our canvas,
         //     and run after-gen seed control + record seed_at_run for the
         //     lock-on-fixed semantics. ---
@@ -1136,6 +1156,45 @@ function attachPreviewCanvas(node) {
         if (event.button === 1) endAngeloPan();
     });
     canvasWrap.addEventListener("pointercancel", endAngeloPan);
+
+    // --- Right-click menu + drag-drop image loading (#7) ---
+    // Right-click the preview → Open / Copy / Paste. The preview is a DOM
+    // <canvas>, so we show our own LiteGraph menu here (the node's
+    // getExtraMenuOptions only fires on the litegraph-rendered node body).
+    canvasWrap.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        _angeloShowImageContextMenu(node, event);
+    });
+
+    // Drag-drop an OS image file onto the node → load it as the base, through
+    // the SAME resolution popup + upload path as the Load Image button
+    // (showLoadImagePopup). stopPropagation so the drop doesn't bubble to the
+    // graph canvas (which would otherwise spawn a LoadImage node).
+    const _dropHi = () => { container.style.outline = "2px dashed rgba(120,170,220,0.9)"; container.style.outlineOffset = "-2px"; };
+    const _dropLo = () => { container.style.outline = ""; container.style.outlineOffset = ""; };
+    container.addEventListener("dragover", (event) => {
+        const dt = event.dataTransfer;
+        if (dt && Array.from(dt.items || []).some((i) => i.kind === "file")) {
+            event.preventDefault();
+            event.stopPropagation();
+            dt.dropEffect = "copy";
+            _dropHi();
+        }
+    });
+    container.addEventListener("dragleave", () => {
+        // Clear unconditionally; a still-active drag re-adds it via dragover.
+        _dropLo();
+    });
+    container.addEventListener("drop", (event) => {
+        const dt = event.dataTransfer;
+        const file = dt && dt.files && Array.from(dt.files).find((f) => f.type && f.type.startsWith("image/"));
+        _dropLo();
+        if (!file) return;
+        event.preventDefault();
+        event.stopPropagation();
+        showLoadImagePopup(node, file);
+    });
 
     // --- Pointer events (instead of mouse*) + pointer capture so long
     //     drags don't get cancelled when the cursor leaves the canvas
@@ -2162,6 +2221,84 @@ function triggerLoadImage(node) {
     });
     document.body.appendChild(input);
     input.click();
+}
+
+// ---- Right-click image actions (#7) -------------------------------------
+// Copy / Paste / Open, like ComfyUI's image nodes. Paste routes through the
+// SAME load path as the Load Image button (showLoadImagePopup → resolution
+// popup → _uploadLoadedImage), so a pasted image gets the same resize/upload
+// handling as a regular load.
+
+function _angeloOpenImageInTab(node) {
+    let url = null;
+    if (node._AngeloPreviewRef) url = makeViewUrl(node._AngeloPreviewRef);
+    else if (node._AngeloImg && node._AngeloImg.src) url = node._AngeloImg.src;
+    if (url) window.open(url, "_blank");
+    else _angeloToast("No image to open yet");
+}
+
+async function _angeloCopyImageToClipboard(node) {
+    const img = node._AngeloImg;
+    if (!img) { _angeloToast("No image to copy yet"); return; }
+    if (!navigator.clipboard || !window.ClipboardItem) {
+        _angeloToast("Clipboard image copy not supported in this browser");
+        return;
+    }
+    try {
+        const c = document.createElement("canvas");
+        c.width = img.naturalWidth || img.width;
+        c.height = img.naturalHeight || img.height;
+        c.getContext("2d").drawImage(img, 0, 0);
+        const blob = await new Promise((res) => c.toBlob(res, "image/png"));
+        await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+        _angeloToast("Image copied to clipboard");
+    } catch (e) {
+        dbg("[Angelo] copy image failed", e);
+        _angeloToast("Copy failed — see console");
+    }
+}
+
+async function _angeloPasteImageFromClipboard(node) {
+    if (!navigator.clipboard || !navigator.clipboard.read) {
+        _angeloToast("Clipboard paste not supported here — try drag-drop");
+        return;
+    }
+    try {
+        const items = await navigator.clipboard.read();
+        for (const it of items) {
+            const type = (it.types || []).find((t) => t.startsWith("image/"));
+            if (type) {
+                const blob = await it.getType(type);
+                const ext = (type.split("/")[1] || "png").replace("jpeg", "jpg");
+                const file = new File([blob], `pasted.${ext}`, { type });
+                showLoadImagePopup(node, file);   // same path as Load Image
+                return;
+            }
+        }
+        _angeloToast("No image found in clipboard");
+    } catch (e) {
+        dbg("[Angelo] paste image failed", e);
+        _angeloToast("Paste failed (clipboard permission?) — try drag-drop");
+    }
+}
+
+function _angeloShowImageContextMenu(node, event) {
+    const hasImg = !!node._AngeloImg;
+    const items = [
+        { content: "Open image in new tab", disabled: !hasImg,
+          callback: () => _angeloOpenImageInTab(node) },
+        { content: "Copy image", disabled: !hasImg,
+          callback: () => _angeloCopyImageToClipboard(node) },
+        { content: "Paste image (load as base)",
+          callback: () => _angeloPasteImageFromClipboard(node) },
+    ];
+    const LG = window.LiteGraph;
+    if (LG && LG.ContextMenu) {
+        new LG.ContextMenu(items, { event, title: "Angelo" });
+    } else {
+        // Fallback: no LiteGraph menu available — just paste (most useful).
+        _angeloPasteImageFromClipboard(node);
+    }
 }
 
 async function _uploadLoadedImage(node, file, mode, mp) {
