@@ -987,8 +987,8 @@ class AngeloRefine:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "LATENT")
-    RETURN_NAMES = ("image", "latent")
+    RETURN_TYPES = ("IMAGE", "LATENT", "IMAGE")
+    RETURN_NAMES = ("image", "latent", "source_image")
     FUNCTION = "run"
     OUTPUT_NODE = True
     CATEGORY = "sampling/Angelo"
@@ -1174,6 +1174,10 @@ class AngeloRefine:
                 "fingerprint": incoming_fp,
                 "sampler_seed_at_run": int(sampler_seed),
                 "loaded_seq": loaded_seq,
+                # Source image (#3/#9): the session base, captured once so the
+                # source_image output survives _HISTORY_CAP eviction of history[0].
+                "source_latent": new_latent,
+                "source_pixels": None,
             }
             out_latent = {"samples": new_latent}
             ui_msg = {
@@ -1184,7 +1188,9 @@ class AngeloRefine:
             # Preview always decodes now (auto_decode deprecated).
             image, image_refs = _decode_to_preview(vae, new_latent)
             ui_msg["Angelo_preview"] = image_refs
-            return {"ui": ui_msg, "result": (image, out_latent)}
+            # Freshly-generated base IS the source image — cache + emit it.
+            _STATE[node_id]["source_pixels"] = image
+            return {"ui": ui_msg, "result": (image, out_latent, image)}
 
         # ===== Edit Mode branch (existing behaviour) =====
 
@@ -1231,6 +1237,10 @@ class AngeloRefine:
                 "undo_seq": undo_seq,
                 "fingerprint": incoming_fp,
                 "loaded_seq": loaded_seq,
+                # Source image (#3/#9): capture the base once, independent of
+                # history[0] (which mutates under _HISTORY_CAP eviction).
+                "source_latent": incoming.clone(),
+                "source_pixels": None,
             }
             state = _STATE[node_id]
 
@@ -1497,8 +1507,22 @@ class AngeloRefine:
         else:
             image, image_refs = _decode_to_preview(vae, current)
             ui_msg["Angelo_preview"] = image_refs
-            
-        return {"ui": ui_msg, "result": (image, out_latent)}
+
+        # Source image (#3/#9): the session base, decoded once and cached so
+        # repeated edits don't re-decode it (and so it survives history[0]
+        # eviction under _HISTORY_CAP). source_latent is set at every base
+        # (re)establishment; the history[0] fallback only covers pre-existing
+        # in-memory state from before this feature.
+        source_image = state.get("source_pixels")
+        if source_image is None:
+            src_latent = state.get("source_latent")
+            if src_latent is None:
+                h0 = state["history"][0]
+                src_latent = h0[0] if isinstance(h0, tuple) else h0
+            source_image = vae.decode(src_latent)
+            state["source_pixels"] = source_image
+
+        return {"ui": ui_msg, "result": (image, out_latent, source_image)}
 
 
 NODE_CLASS_MAPPINGS = {
