@@ -45,6 +45,10 @@ import nodes as comfy_nodes
 #     "history":   list[tuple[Tensor, Tensor | None]], # stack of (latent, pixels) (oldest first, current = [-1])
 #     "click_seq": int,            # last processed click_seq from JS
 #     "undo_seq":  int,            # last processed undo_seq from JS
+#     "redo_seq":  int,            # last processed redo_seq from JS
+#     "redo_stack": list,          # entries Undo popped, awaiting Redo (cleared on new edit)
+#     "source_latent": Tensor,     # session base latent, for the source_image output
+#     "source_pixels": Tensor|None,# decoded source base (lazy, cached)
 #     "fingerprint": str,          # hash of incoming latent; mismatch = upstream changed
 #   }
 _STATE: dict[str, dict] = {}
@@ -970,6 +974,13 @@ class AngeloRefine:
                 # Declared LAST so older saved workflows don't shift their
                 # positional widgets_values; defaults to "".
                 "seg_mask_png": ("STRING", {"default": "", "multiline": False}),
+
+                # Redo (#6): the Redo button / Ctrl-Y bumps this. Python pushes
+                # back onto the history stack the entry that Undo most recently
+                # popped off (held on a per-node redo stack). Declared LAST so
+                # older saved workflows don't shift their positional
+                # widgets_values; defaults to 0.
+                "redo_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -1046,6 +1057,7 @@ class AngeloRefine:
         seg_polygon="",
         reroll_seq=0,
         seg_mask_png="",
+        redo_seq=0,
         latent=None,
         clip=None,
         unique_id=None,
@@ -1250,7 +1262,13 @@ class AngeloRefine:
         new_undo = undo_seq > 0 and undo_seq != state.get("undo_seq", -1)
         if new_undo:
             if len(state["history"]) > 1:
-                state["history"].pop()
+                # Move the popped entry onto the redo stack so Redo (#6) can
+                # restore it. Bounded like the history stack.
+                popped = state["history"].pop()
+                redo = state.setdefault("redo_stack", [])
+                redo.append(popped)
+                if len(redo) > _HISTORY_CAP:
+                    state["redo_stack"] = redo[-_HISTORY_CAP:]
             state["undo_seq"] = undo_seq
             # Undo is a PURE restore — pop the cached latent and decode it.
             # It must NEVER re-sample, or it would produce a different image
@@ -1262,6 +1280,22 @@ class AngeloRefine:
             # click and re-run the last mask with the (since-randomized) seed,
             # restoring the WRONG result. (Harmless no-op when the hook didn't
             # bump it.)
+            state["click_seq"] = click_seq
+
+        # ===== Redo (#6): restore an entry Undo moved to the redo stack =====
+        # A PURE restore — never re-samples — and runs BEFORE `current` is read
+        # below, so the restored entry becomes history[-1]. Absorbs click_seq
+        # for the same reason Undo does (the Persistent Mask queue hook bumps
+        # it on every queue, including the Redo button's). No-op if the redo
+        # stack is empty. A genuine new edit clears the redo stack (below).
+        new_redo = redo_seq > 0 and redo_seq != state.get("redo_seq", -1)
+        if new_redo:
+            redo = state.get("redo_stack") or []
+            if redo:
+                state["history"].append(redo.pop())
+                if len(state["history"]) > _HISTORY_CAP:
+                    state["history"] = state["history"][-_HISTORY_CAP:]
+            state["redo_seq"] = redo_seq
             state["click_seq"] = click_seq
 
         # ===== Re-roll: redo the most recent edit with a fresh seed =====
@@ -1487,6 +1521,8 @@ class AngeloRefine:
             state["history"].append((refined, refined_pixels))
             if len(state["history"]) > _HISTORY_CAP:
                 state["history"] = state["history"][-_HISTORY_CAP:]
+            # A genuine new edit (click or re-roll) invalidates the redo branch.
+            state["redo_stack"] = []
             state["click_seq"] = click_seq
             state["refine_seed_at_run"] = int(seed)
             current = refined

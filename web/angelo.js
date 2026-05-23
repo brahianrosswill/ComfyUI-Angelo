@@ -114,6 +114,25 @@ function installKeyboardShortcuts() {
         const modeW = findWidget(node, "mode");
         if (!modeW || String(modeW.value) !== "Edit Mode") return;
 
+        // Undo / Redo over the Angelo canvas. Guarded by the hover + Edit Mode
+        // checks above, so ComfyUI's graph-level Ctrl-Z is unaffected anywhere
+        // else. Ctrl/Cmd-Z = undo; Ctrl/Cmd-Y or Ctrl/Cmd-Shift-Z = redo.
+        if ((event.ctrlKey || event.metaKey) && !event.altKey) {
+            const lk = (event.key || "").toLowerCase();
+            if (lk === "z" && !event.shiftKey) {
+                triggerUndo(node);
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+            }
+            if (lk === "y" || (lk === "z" && event.shiftKey)) {
+                triggerRedo(node);
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+            }
+        }
+
         const binding = handlers[event.key];
         if (!binding) return;
 
@@ -390,8 +409,12 @@ function attachPreviewCanvas(node) {
     row1.appendChild(resetBtn);
 
     const undoBtn = makeActionButton("Undo", () => triggerUndo(node), "undo");
-    undoBtn.title = "Pop the most recent refine off the history stack. Restores the cached latent from before the last click.";
+    undoBtn.title = "Pop the most recent refine off the history stack. Restores the cached latent from before the last click.\n\nKeyboard (cursor over canvas): Ctrl-Z.";
     row1.appendChild(undoBtn);
+
+    const redoBtn = makeActionButton("Redo", () => triggerRedo(node), "redo");
+    redoBtn.title = "Re-apply the most recent edit that Undo removed. A new edit clears the redo history.\n\nKeyboard (cursor over canvas): Ctrl-Y or Ctrl-Shift-Z.";
+    row1.appendChild(redoBtn);
 
     const rerollBtn = makeActionButton("Re-roll", () => triggerReroll(node), "reroll");
     rerollBtn.title = "Try the most recent edit again with a fresh seed — SAME mask, SAME starting image. Each press replaces the last attempt with a new variation (it doesn't stack on top). Make an edit first, then Re-roll to cycle seeds without re-painting or resetting. Works for clicks, brush strokes, rectangles and detected masks.";
@@ -2827,6 +2850,17 @@ function triggerUndo(node) {
     if (typeof app.queuePrompt === "function") app.queuePrompt(0);
 }
 
+// Redo: re-apply the edit Undo most recently removed. Pure restore (like
+// Undo), so it just bumps redo_seq and re-queues — Python pops its redo
+// stack back onto history. No seed change, no re-sample.
+function triggerRedo(node) {
+    const wr = findWidget(node, "redo_seq");
+    if (!wr) return;
+    setWidget(wr, ((wr.value || 0) + 1) & 0x7FFFFFFF);
+    dbg("queue redo", { redo_seq: wr.value });
+    if (typeof app.queuePrompt === "function") app.queuePrompt(0);
+}
+
 // Re-roll: redo the most recent edit with a fresh seed, same mask, same
 // pre-edit base. Force a NEW random seed even if Seed Ctrl is "fixed" —
 // a re-roll is by definition new dice — then bump reroll_seq so Python
@@ -2892,6 +2926,7 @@ function makeActionButton(label, onClick, kind = "neutral") {
     const themes = {
         reset:   { fg: "#ffe0d0", bg: "rgba(70, 50, 50, 0.95)",  border: "rgba(220, 140, 100, 0.9)" },
         undo:    { fg: "#dde7ff", bg: "rgba(50, 60, 70, 0.95)",  border: "rgba(120, 170, 220, 0.9)" },
+        redo:    { fg: "#d2f3e2", bg: "rgba(48, 66, 60, 0.95)",  border: "rgba(110, 200, 160, 0.9)" },
         reroll:  { fg: "#ecdcff", bg: "rgba(58, 50, 72, 0.95)",  border: "rgba(170, 130, 220, 0.9)" },
         neutral: { fg: "#ccc",    bg: "#2a2a2a",                  border: "#555" },
     };
@@ -3456,6 +3491,8 @@ function hideMechanicalWidgets(node) {
         "seg_mask_png",
         // Re-roll button — bumps to re-run the last edit with a new seed
         "reroll_seq",
+        // Redo button — bumps to restore an edit that Undo removed
+        "redo_seq",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",
