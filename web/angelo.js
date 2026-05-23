@@ -109,6 +109,21 @@ function installKeyboardShortcuts() {
             return;
         }
 
+        // 'F' fits the image to the panel (zoom=1, centred). Works in any
+        // mode — it mirrors the double-middle-click reset — so it sits before
+        // the Edit-Mode gate below. No modifiers, so Ctrl-F etc. stay with the
+        // browser.
+        if ((event.key === "f" || event.key === "F")
+            && !event.ctrlKey && !event.metaKey && !event.altKey) {
+            if (node._AngeloImg) {
+                resetView(node);
+                redrawCanvasWithOverlays(node);
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            return;
+        }
+
         // Only active in Edit Mode. Sampler Mode has the toolbar
         // greyed; the keys would feel inert.
         const modeW = findWidget(node, "mode");
@@ -1033,7 +1048,7 @@ function attachPreviewCanvas(node) {
     // --- Zoom / pan (view layer, independent of the refine pipeline) ---
     //   • Wheel       → zoom toward the cursor (clamped 0.25–8×).
     //   • Middle-drag → pan.
-    //   • Double-middle-click → reset to fit.
+    //   • Double-middle-click, or 'F' (cursor over node) → reset to fit.
     // While zoomed/panned the auto-fit (fitCanvasDisplaySize) is suppressed
     // so it never stomps the manual view; reset / new image restore fit.
 
