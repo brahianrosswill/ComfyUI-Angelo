@@ -42,7 +42,7 @@ import nodes as comfy_nodes
 
 # Per-node state cache:
 #   unique_id -> {
-#     "history":   list[Tensor],   # stack of latents (oldest first, current = [-1])
+#     "history":   list[tuple[Tensor, Tensor | None]], # stack of (latent, pixels) (oldest first, current = [-1])
 #     "click_seq": int,            # last processed click_seq from JS
 #     "undo_seq":  int,            # last processed undo_seq from JS
 #     "fingerprint": str,          # hash of incoming latent; mismatch = upstream changed
@@ -344,8 +344,9 @@ def _refine_with_fine_upscaling(
     *,
     model,
     vae,
-    current: torch.Tensor,    # [B, C, H_lat, W_lat] cached full-res latent
-    mask: torch.Tensor,        # [1, H_lat, W_lat] feathered mask, latent res
+    current: torch.Tensor,               # [B, C, H_lat, W_lat] cached full-res latent
+    current_pixels: torch.Tensor | None, # [B, H_pix, W_pix, C] cached full-res pixels to avoid redundant VAE decode
+    mask: torch.Tensor,                  # [1, H_lat, W_lat] feathered mask, latent res
     scale_x: float,
     scale_y: float,
     target_mp: float,
@@ -363,7 +364,7 @@ def _refine_with_fine_upscaling(
     denoise: float,
     callback,
     disable_pbar: bool,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor | None]:
     """Pixel-space crop + upscale + VAE encode + refine + VAE decode +
     downscale + composite + VAE encode. The latent-space crop+upscale
     approach smears bilinearly-interpolated latents into a low-freq
@@ -372,16 +373,12 @@ def _refine_with_fine_upscaling(
     been tuned for natural images) and re-encoding gives the model a
     "natural" latent at the higher resolution to denoise from.
 
-    Cost: 2 VAE encodes + 1 VAE decode added per Fine Upscale refine
-    (the existing end-of-run preview decode is unchanged). For FLUX 2
-    Klein on a 5090 that's about 0.5-1s extra per click.
-
-    Returns the new full-resolution refined latent, or `current`
-    unchanged if the mask bbox is empty / degenerate.
+    Returns a tuple of (new_latent, new_pixels). Returns (current, current_pixels)
+    if the mask bbox is empty / degenerate.
     """
     bbox = _mask_bbox_latent(mask)
     if bbox is None:
-        return current
+        return current, current_pixels
     y0_tight, y1_tight, x0_tight, x1_tight = bbox
 
     # Apply context padding: grow the bbox outward by context_pad_pixel
@@ -404,7 +401,7 @@ def _refine_with_fine_upscaling(
     bbox_h_lat = y1 - y0
     bbox_w_lat = x1 - x0
     if bbox_h_lat <= 0 or bbox_w_lat <= 0:
-        return current
+        return current, current_pixels
 
     scale = _fine_upscale_factor(bbox_w_lat, bbox_h_lat, scale_x, scale_y, target_mp, max_linear)
     if scale <= 1.0:
@@ -413,7 +410,7 @@ def _refine_with_fine_upscaling(
         # when the painted region already meets the MP target.
         print(f"[Angelo fine-upscale] scale=1.0 — using latent-space path (no VAE round-trip)")
         noise = comfy.sample.prepare_noise(current, seed, None)
-        return comfy.sample.sample(
+        new_latent = comfy.sample.sample(
             model, noise, steps, cfg, sampler_name, scheduler,
             positive, negative, current,
             denoise=denoise,
@@ -422,9 +419,18 @@ def _refine_with_fine_upscaling(
             disable_pbar=disable_pbar,
             seed=seed,
         )
+        # Return None for pixels because the latent was modified directly;
+        # this forces a fresh VAE decode for the preview in the main run() method.
+        return new_latent, None
 
     # ----- VAE decode the full cached latent → cached pixels -----
-    cached_pixels = vae.decode(current)  # (B, H_pix, W_pix, C) float [0,1]
+    # Optimization: Reuse cached pixels if available to prevent VAE degradation 
+    # (loss of high-frequency details) across multiple consecutive edits.
+    if current_pixels is not None:
+        cached_pixels = current_pixels
+    else:
+        cached_pixels = vae.decode(current)  # (B, H_pix, W_pix, C) float [0,1]
+        
     H_pix = cached_pixels.shape[1]
     W_pix = cached_pixels.shape[2]
     # Pixel-per-latent ratio per axis (16 for FLUX 2, 8 for SDXL/SD1.5)
@@ -550,7 +556,8 @@ def _refine_with_fine_upscaling(
     # refine each click anyway, so any drift there is overwritten).
     alpha_lat = mask.unsqueeze(0)  # [1, 1, H_lat, W_lat]
     new_latent = encoded_latent * alpha_lat + current * (1.0 - alpha_lat)
-    return new_latent
+    
+    return new_latent, new_pixels
 
 
 def _circle_mask_latent_direct(
@@ -1079,12 +1086,14 @@ class AngeloRefine:
             incoming = forced_base
         elif loaded_active and state is not None and state.get("history"):
             # Loaded image still active — keep its base, ignore `latent`.
-            incoming = state["history"][0]
+            hist_0 = state["history"][0]
+            incoming = hist_0[0] if isinstance(hist_0, tuple) else hist_0
         elif latent is not None:
             incoming = latent["samples"]
             base_from_wired_latent = True
         elif state is not None and state.get("history"):
-            incoming = state["history"][0]
+            hist_0 = state["history"][0]
+            incoming = hist_0[0] if isinstance(hist_0, tuple) else hist_0
         else:
             raise ValueError(
                 "Angelo: no base image — connect a `latent` input or use the "
@@ -1159,7 +1168,7 @@ class AngeloRefine:
             # next, and (b) restore this value if the user later switches
             # the control to "fixed".
             _STATE[node_id] = {
-                "history": [new_latent],
+                "history": [(new_latent, None)],
                 "click_seq": click_seq,
                 "undo_seq": undo_seq,
                 "fingerprint": incoming_fp,
@@ -1217,7 +1226,7 @@ class AngeloRefine:
             # base. The user's next genuine click bumps click_seq and fires
             # normally.
             _STATE[node_id] = {
-                "history": [incoming.clone()],
+                "history": [(incoming.clone(), None)],
                 "click_seq": click_seq,
                 "undo_seq": undo_seq,
                 "fingerprint": incoming_fp,
@@ -1260,7 +1269,12 @@ class AngeloRefine:
             state["history"].pop()
         state["reroll_seq"] = reroll_seq
 
-        current = state["history"][-1]
+        hist_last = state["history"][-1]
+        if isinstance(hist_last, tuple):
+            current, current_pixels = hist_last
+        else:
+            current = hist_last
+            current_pixels = None
 
         # Has the user clicked since our last execution for this node?
         new_click = (
@@ -1434,13 +1448,8 @@ class AngeloRefine:
                 )
 
             if fine_upscaling:
-                # Pixel-space crop + upscale + VAE encode + refine + VAE
-                # decode + downscale + composite + VAE encode. Avoids
-                # the latent-bilinear-smearing failure mode of the
-                # earlier latent-space approach. The OFF code path
-                # below is untouched.
-                refined = _refine_with_fine_upscaling(
-                    model=model, vae=vae, current=refine_source, mask=mask,
+                refined, refined_pixels = _refine_with_fine_upscaling(
+                    model=model, vae=vae, current=refine_source, current_pixels=current_pixels, mask=mask,
                     scale_x=scale_x, scale_y=scale_y,
                     target_mp=float(min_megapixels),
                     max_linear=float(max_upscale),
@@ -1453,10 +1462,6 @@ class AngeloRefine:
                     denoise=denoise, callback=callback, disable_pbar=disable_pbar,
                 )
             else:
-                # ===== OFF path — copy-verbatim from 5dc6697; do not edit
-                # (only `current` → `refine_source`, which equals `current`
-                #  except on a Re-roll, where the pop pinned it to the
-                #  pre-edit base) =====
                 noise = comfy.sample.prepare_noise(refine_source, this_seed, None)
                 refined = comfy.sample.sample(
                     model, noise, steps, cfg, sampler_name, scheduler,
@@ -1467,31 +1472,32 @@ class AngeloRefine:
                     disable_pbar=disable_pbar,
                     seed=this_seed,
                 )
-                # ===== end OFF path =====
+                refined_pixels = None
 
-            # Push the new refined latent onto the history stack so undo
-            # can pop back to the pre-click state. Cap the stack length.
-            state["history"].append(refined)
+            state["history"].append((refined, refined_pixels))
             if len(state["history"]) > _HISTORY_CAP:
                 state["history"] = state["history"][-_HISTORY_CAP:]
             state["click_seq"] = click_seq
-            # Store the seed Python used. JS uses this for after-gen
-            # control + lock-on-fixed semantics.
             state["refine_seed_at_run"] = int(seed)
             current = refined
+            current_pixels = refined_pixels
 
         out_latent = {"samples": current}
-        # Build the ui message — always includes the mode + seed_at_run
-        # values so JS can apply after-gen control and lock-on-fixed.
-        # Multi-valued lists because ComfyUI's ui dict uses list format.
         ui_msg = {
             "Angelo_preview": [],
             "Angelo_mode": ["Edit Mode"],
             "Angelo_refine_seed_at_run": [int(state.get("refine_seed_at_run", seed))],
         }
-        # Preview always decodes now (auto_decode deprecated).
-        image, image_refs = _decode_to_preview(vae, current)
-        ui_msg["Angelo_preview"] = image_refs
+        
+        if current_pixels is not None:
+            image = current_pixels
+            previewer = comfy_nodes.PreviewImage()
+            ui = previewer.save_images(image, filename_prefix="Angelo_preview")
+            ui_msg["Angelo_preview"] = ui["ui"]["images"]
+        else:
+            image, image_refs = _decode_to_preview(vae, current)
+            ui_msg["Angelo_preview"] = image_refs
+            
         return {"ui": ui_msg, "result": (image, out_latent)}
 
 
