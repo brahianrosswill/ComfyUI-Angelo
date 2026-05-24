@@ -25,7 +25,7 @@
                                   │  └───────────────────────┘  │
                                   └────────────┬────────────────┘
                                                │
-                                       latent + image outputs
+                                 image · latent · source_image outputs
 ```
 
 That's the entire workflow. No KSampler upstream, no ADetailer downstream, no Image-to-Mask plumbing in between. Generate, click, done. The image always scales to fit the node — resize the node and the preview tracks it.
@@ -39,7 +39,7 @@ ComfyUI's standard "fix the bad hand" workflow is: generate, save the image, ope
 Angelo collapses that into:
 
 - **Click** a region. It refines with your main prompt, in place, immediately.
-- **Load Image** to edit an existing photo directly in the node — no Empty Latent + `VAEEncode` chain to wire (you still connect the `vae` input as normal; Angelo does the encode itself).
+- **Load Image** to edit an existing photo directly in the node — no Empty Latent + `VAEEncode` chain to wire (you still connect the `vae` input as normal; Angelo does the encode itself). Or just **drag-drop an image file** onto the node; **right-click** the preview to copy it or open it in a new tab.
 - **Paint** a freeform stroke with mouse-down + drag. Same thing but custom shape.
 - **Type an Area Prompt** right in the node to refine a region with a different prompt (e.g. main prompt = "person in forest", area prompt = "detailed photorealistic face") — no second CLIP Text Encode node needed.
 - **Toggle Xtra-Fine** to refine small regions at much higher effective resolution (the ADetailer move, but with full prompt control).
@@ -47,7 +47,8 @@ Angelo collapses that into:
 - **Smart Guided Inpaint** — no drawing at all: pick a location from a dropdown ("top left", "center", …) + describe what to add, and the edit model places it.
 - **Detect** a region by *describing* it (optional SAM 3) — type "the face", click the highlight, and it masks the silhouette for you. No painting. Nudge the mask in/out, or Shift/Alt-drag to touch it up by hand.
 - **Re-roll** the last edit with a fresh seed on the same mask + original image, or **toggle Persistent Mask** to keep evolving a region over repeated Queues.
-- **Undo** to roll back the last refine.
+- **Undo / Redo** to step back and forward through your refines.
+- **`source_image` output** emits the original pre-edit base, ready to wire straight into a compare node.
 
 All in one node. All without re-queueing the whole workflow manually for each fix.
 
@@ -144,7 +145,7 @@ The toolbar holds everything — there are no native widget rows. Top to bottom,
   [Steps] [CFG] [Sampler ▾] [Sched ▾]            ← shared generation config (always active)
   [Smpl Seed] [Smpl Ctrl ▾] [Smpl Denoise]       ← base-gen seed (greys in Edit Mode)
  ─────────────────────────────────────────
-  [Reset] [Undo] [Re-roll] | [Persistent Mask] [Area Prompt] [Paint Mode] [Xtra-Fine] | [Inpaint ▾]
+  [Reset] [Undo] [Redo] [Re-roll] | [Persistent Mask] [Area Prompt] [Paint Mode] [Xtra-Fine] | [Inpaint ▾]
   [Click R] [Feather] [Denoise] [Seed] [Ctrl ▾] | [MP] [Max] [Method ▾]    ← edit block (greys in Sampler Mode)
 ```
 
@@ -164,6 +165,7 @@ The **Mode** switch sits centred up top. Below it, the generation block (always 
 |---|---|
 | **Reset** | Discard cached refinements + history, start fresh from the Sampler-Mode base |
 | **Undo** | Pop the most recent refine off the history stack (up to 10 deep) |
+| **Redo** | Re-apply the most recent refine that Undo removed. A new edit clears the redo history. Button-only (no Ctrl-Z/Y — those clash with ComfyUI's graph undo) |
 | **Re-roll** | Redo the most recent edit with a fresh seed on the **same mask + same starting image**, replacing the last attempt — cycle seeds on one edit without reset → re-mask → rerun. Works for click / paint / rectangle / detected masks |
 | **Persistent Mask** | Hold the last mask, then hit Queue repeatedly to keep refining that region on the **latest** result — each press builds further, so you can gradually morph it (pair with `Ctrl=randomize`). For variations on the *original* image instead, use **Re-roll**. Locked OFF in Smart Guided Inpaint (no mask) |
 | **Area Prompt** | Refine with the Area Prompt text typed in the box above the canvas (encoded with the connected `CLIP`) instead of the main prompt. Requires a `CLIP` input + non-empty text. The box only appears when this is ON. Forced ON in both Smart modes |
@@ -176,7 +178,7 @@ The **Mode** switch sits centred up top. Below it, the generation block (always 
 | Control | What it does |
 |---|---|
 | **Click R** | Pixel radius for single-click refines + brush size in Paint Mode |
-| **Feather** | Pixel-space gaussian feathering on the mask edge for smooth transitions. Defaults to 0 (and is adjustable) in Smart Inpaint; disabled in Smart Guided Inpaint |
+| **Feather** | Pixel-space gaussian feathering on the mask edge for smooth transitions. Defaults to 15 (and is adjustable) in Smart Inpaint for a soft blend; disabled in Smart Guided Inpaint |
 | **Denoise** | How much trajectory to run on the refine (0.3 = subtle, 0.6 = real redo, 0.9+ = regenerate). Locked to 1.0 in both Smart modes |
 | **Seed** + **Ctrl ▾** | Seed for the refine pass + after-generate control. Defaults to `randomize` so each refine is a fresh variation |
 | **MP** | (Xtra-Fine only) Target megapixels for the refine pass |
@@ -243,7 +245,7 @@ Three options for how a region is treated. The two Smart modes need an **edit mo
 
 ### Why Smart Inpaint exists
 
-An edit model like FLUX 2 Klein has no concept of a mask — it takes a reference image + a prompt and produces an edited image. The painted shape only constrains *where the result is composited*, not what the model generates. Smart Inpaint addresses this by (a) cropping to the dragged rectangle so the model's working region is the area you care about, (b) injecting the scene as `reference_latents` so the edit branch sees the surrounding context, and (c) zeroing the masked latent so the model fills it as new content rather than refining what was there.
+An edit model like FLUX 2 Klein has no concept of a mask — it takes a reference image + a prompt and produces an edited image. The painted shape only constrains *where the result is composited*, not what the model generates. Smart Inpaint addresses this by (a) cropping to the dragged rectangle so the model's working region is the area you care about, (b) injecting **that cropped region** as `reference_latents` so the edit branch sees the local context (the reference is the crop only — never the whole image), and (c) zeroing the masked latent so the model fills it as new content rather than refining what was there.
 
 Typical "add a person on the road" workflow:
 
@@ -335,6 +337,8 @@ The script installs SAM 3 + its dependencies into the *same* Python ComfyUI uses
 
 Connect a `CLIP` (the same one feeding your main positive/negative). Toggle **Area Prompt** on — a text box appears between the toolbar and the canvas. Type a prompt; refines encode it with the CLIP and use it instead of the main prompt. Toggle off → the box hides and refines revert to the main prompt. Hiding the box never loses what you typed (it lives in the node and reloads), and the cached image persists across the toggle.
 
+**While Area Prompt is on, the refine uses the Area text _exclusively_ and never falls back to the main prompt — even when the Area text is left empty (empty = an empty positive prompt).** This matters for the Smart edit modes: the main positive can carry a whole-image `reference_latents` (e.g. a Klein edit workflow's ReferenceLatent), and letting it leak in made an empty-Area-Prompt Smart Inpaint reproduce the entire scene into the region instead of editing just it.
+
 The box has a **Pos/Neg** toggle that switches which prompt you're editing. Negative is optional and falls back to the main negative when empty (matters only for CFG > 1; ignored at CFG=1 / distilled models like Klein — which is why it's tucked behind a toggle rather than a second always-visible box).
 
 Both Smart modes force Area Prompt ON (it's the whole point there), and add an **Insert Smart Phrasing** button for the *keep X the same* constraints. Smart Guided Inpaint also adds the **Location** dropdown directly above the box.
@@ -349,7 +353,7 @@ The preview fits the node by default, but you can zoom in to work on fine detail
 |---|---|
 | **Mouse wheel** | Zoom in / out, centered on the cursor (0.25×–8×) |
 | **Middle-mouse hold + drag** | Pan around |
-| **Double middle-click** | Reset back to fit |
+| **Double middle-click**, or **F** (cursor over node) | Reset back to fit |
 
 When you zoom in (>1×), a small **minimap** appears in the bottom-right corner showing the whole image with a marker for your current viewport. Click-to-refine, paint, and rectangle-drag all keep working while zoomed — clicks land on the correct image pixel at any zoom — so you can zoom into a face, click to refine, and stay zoomed for the next click.
 
