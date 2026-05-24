@@ -8,6 +8,9 @@ __pycache__/
 *.log
 *.tmp
 
+# OS cruft
+.DS_Store
+
 # SAM 3 source, cloned by install_sam3_support.* (optional Detect feature)
 sam3/
 # ComfyUI's interpreter path, recorded at node load for the installer
