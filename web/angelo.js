@@ -129,24 +129,9 @@ function installKeyboardShortcuts() {
         const modeW = findWidget(node, "mode");
         if (!modeW || String(modeW.value) !== "Edit Mode") return;
 
-        // Undo / Redo over the Angelo canvas. Guarded by the hover + Edit Mode
-        // checks above, so ComfyUI's graph-level Ctrl-Z is unaffected anywhere
-        // else. Ctrl/Cmd-Z = undo; Ctrl/Cmd-Y or Ctrl/Cmd-Shift-Z = redo.
-        if ((event.ctrlKey || event.metaKey) && !event.altKey) {
-            const lk = (event.key || "").toLowerCase();
-            if (lk === "z" && !event.shiftKey) {
-                triggerUndo(node);
-                event.preventDefault();
-                event.stopPropagation();
-                return;
-            }
-            if (lk === "y" || (lk === "z" && event.shiftKey)) {
-                triggerRedo(node);
-                event.preventDefault();
-                event.stopPropagation();
-                return;
-            }
-        }
+        // NOTE: Undo/Redo are deliberately button-only (no Ctrl-Z / Ctrl-Y /
+        // Ctrl-Shift-Z). Binding those over the canvas clashed too much with
+        // ComfyUI's graph-level undo/redo, so the shortcuts were removed.
 
         const binding = handlers[event.key];
         if (!binding) return;
@@ -290,8 +275,6 @@ app.registerExtension({
                   callback: () => _angeloOpenImageInTab(node) },
                 { content: "Angelo: copy image", disabled: !hasImg,
                   callback: () => _angeloCopyImageToClipboard(node) },
-                { content: "Angelo: paste image (load as base)",
-                  callback: () => _angeloPasteImageFromClipboard(node) },
                 null,
             );
             return options;
@@ -444,11 +427,11 @@ function attachPreviewCanvas(node) {
     row1.appendChild(resetBtn);
 
     const undoBtn = makeActionButton("Undo", () => triggerUndo(node), "undo");
-    undoBtn.title = "Pop the most recent refine off the history stack. Restores the cached latent from before the last click.\n\nKeyboard (cursor over canvas): Ctrl-Z.";
+    undoBtn.title = "Pop the most recent refine off the history stack. Restores the cached latent from before the last click.";
     row1.appendChild(undoBtn);
 
     const redoBtn = makeActionButton("Redo", () => triggerRedo(node), "redo");
-    redoBtn.title = "Re-apply the most recent edit that Undo removed. A new edit clears the redo history.\n\nKeyboard (cursor over canvas): Ctrl-Y or Ctrl-Shift-Z.";
+    redoBtn.title = "Re-apply the most recent edit that Undo removed. A new edit clears the redo history.";
     row1.appendChild(redoBtn);
 
     const rerollBtn = makeActionButton("Re-roll", () => triggerReroll(node), "reroll");
@@ -515,14 +498,16 @@ function attachPreviewCanvas(node) {
             const w = findWidget(node, "inpainting_mode");
             if (!w) return;
             setWidget(w, val);
-            // Switching INTO Smart Inpaint: default feather to 0 (hard
-            // rectangle edge). It stays user-adjustable afterwards — this
-            // only fires on the user's mode pick, not on workflow load,
-            // so a saved feather value is preserved across reloads.
+            // Switching INTO Smart Inpaint: default feather to 15 (a soft
+            // rectangle edge that blends the inserted content into the
+            // surroundings — a useful default for this mode). It stays
+            // user-adjustable afterwards — this only fires on the user's mode
+            // pick, not on workflow load, so a saved feather value is
+            // preserved across reloads.
             if (val === "Smart Inpaint") {
                 const fw = findWidget(node, "feather_radius");
                 if (fw) {
-                    setWidget(fw, 0);
+                    setWidget(fw, 15);
                     syncFeatherInput(node);
                 }
             }
@@ -534,7 +519,7 @@ function attachPreviewCanvas(node) {
     );
     inpaintModeSelect.title = "Inpainting Mode.\n\n"
         + "Refine — paint/click on the canvas to refine an existing region (faces, hands, textures). Partial-denoise from existing content.\n\n"
-        + "Smart Inpaint — drag a rectangle on the canvas (click and hold one corner, release at the opposite). Adds NEW content in that region. Locks denoise=1.0 + Xtra-Fine=ON + Area Prompt=ON; injects reference_latents so an edit model's (FLUX 2 Klein 9B etc.) edit branch activates. Feather defaults to 0 but stays adjustable.\n\n"
+        + "Smart Inpaint — drag a rectangle on the canvas (click and hold one corner, release at the opposite). Adds NEW content in that region. Locks denoise=1.0 + Xtra-Fine=ON + Area Prompt=ON; injects reference_latents so an edit model's (FLUX 2 Klein 9B etc.) edit branch activates. Feather defaults to 15 (soft blend) but stays adjustable.\n\n"
         + "Smart Guided Inpaint — no painting or boxes. Pick a LOCATION from the dropdown above the Area Prompt (top left, center, bottom half, …); it's prepended to your prompt at run time (e.g. 'In the top left of the image, a red car') and the edit model places the content there across the whole image. Locks denoise=1.0 + Xtra-Fine=OFF + Area Prompt=ON; Feather and Persistent Mask disabled (no mask). Press 'Generate Guided Edit' to run. Coarse regions land most reliably.";
     row1.appendChild(inpaintModeSelect);
     node._AngeloInpaintModeSelect = inpaintModeSelect;
@@ -2224,10 +2209,9 @@ function triggerLoadImage(node) {
 }
 
 // ---- Right-click image actions (#7) -------------------------------------
-// Copy / Paste / Open, like ComfyUI's image nodes. Paste routes through the
-// SAME load path as the Load Image button (showLoadImagePopup → resolution
-// popup → _uploadLoadedImage), so a pasted image gets the same resize/upload
-// handling as a regular load.
+// Copy / Open, like ComfyUI's image nodes. Loading an image is via drag-drop
+// onto the node or the Load Image button; clipboard paste was removed — it was
+// unreliable across browsers and clipboard-permission prompts.
 
 function _angeloOpenImageInTab(node) {
     let url = null;
@@ -2258,30 +2242,6 @@ async function _angeloCopyImageToClipboard(node) {
     }
 }
 
-async function _angeloPasteImageFromClipboard(node) {
-    if (!navigator.clipboard || !navigator.clipboard.read) {
-        _angeloToast("Clipboard paste not supported here — try drag-drop");
-        return;
-    }
-    try {
-        const items = await navigator.clipboard.read();
-        for (const it of items) {
-            const type = (it.types || []).find((t) => t.startsWith("image/"));
-            if (type) {
-                const blob = await it.getType(type);
-                const ext = (type.split("/")[1] || "png").replace("jpeg", "jpg");
-                const file = new File([blob], `pasted.${ext}`, { type });
-                showLoadImagePopup(node, file);   // same path as Load Image
-                return;
-            }
-        }
-        _angeloToast("No image found in clipboard");
-    } catch (e) {
-        dbg("[Angelo] paste image failed", e);
-        _angeloToast("Paste failed (clipboard permission?) — try drag-drop");
-    }
-}
-
 function _angeloShowImageContextMenu(node, event) {
     const hasImg = !!node._AngeloImg;
     const items = [
@@ -2289,15 +2249,10 @@ function _angeloShowImageContextMenu(node, event) {
           callback: () => _angeloOpenImageInTab(node) },
         { content: "Copy image", disabled: !hasImg,
           callback: () => _angeloCopyImageToClipboard(node) },
-        { content: "Paste image (load as base)",
-          callback: () => _angeloPasteImageFromClipboard(node) },
     ];
     const LG = window.LiteGraph;
     if (LG && LG.ContextMenu) {
         new LG.ContextMenu(items, { event, title: "Angelo" });
-    } else {
-        // Fallback: no LiteGraph menu available — just paste (most useful).
-        _angeloPasteImageFromClipboard(node);
     }
 }
 
