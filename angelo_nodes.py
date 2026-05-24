@@ -499,10 +499,19 @@ def _refine_with_fine_upscaling(
     # POSITIVE ONLY — putting reference_latents on negative would tell
     # CFG>1 samplers to steer AWAY from the reference scene. Non-edit
     # models ignore the field, so this is harmless on any checkpoint.
+    #
+    # append=False (REPLACE, not append): the reference must be ONLY this
+    # upscaled crop. When the Area Prompt is empty, refine_positive falls back
+    # to the node's `positive` input, which in a Klein edit workflow already
+    # carries reference_latents = the WHOLE source image (from an upstream
+    # ReferenceLatent node). append=True stacked the crop onto that whole-image
+    # reference, and the whole-image one dominated — so the patch reproduced
+    # the entire original scene instead of editing the selected region.
+    # Replacing guarantees Klein sees the crop and nothing else.
     if inpainting_mode == "Smart Inpaint":
         reference_latent = latent_up.clone()
         positive = node_helpers.conditioning_set_values(
-            positive, {"reference_latents": [reference_latent]}, append=True,
+            positive, {"reference_latents": [reference_latent]}, append=False,
         )
         m = mask_crop_up.unsqueeze(0)
         latent_up = (1.0 - m) * latent_up
@@ -1119,13 +1128,12 @@ class AngeloRefine:
         # workflows. Override the widget values up front so every code
         # path downstream sees the locked values regardless of what
         # the user set the toolbar to.
-        # area_prompt ON makes Smart Inpaint encode the Area Prompt
-        # text (typed below the canvas) with the connected CLIP and use
-        # it — a separate "what to insert" prompt is usually what you
-        # want alongside a wider scene prompt on the main inputs. If no
-        # CLIP is wired or the area text is empty, the toggle is a no-op
-        # and the main positive is used (see the area-conditioning block
-        # further down in run()), so forcing ON is always safe.
+        # area_prompt ON makes Smart Inpaint encode the Area Prompt text
+        # (typed below the canvas) with the connected CLIP and use it — a
+        # separate "what to insert" prompt, kept independent of the main scene
+        # prompt. While area_prompt is on the refine uses the Area text ONLY
+        # (empty Area text → empty conditioning), never the main positive — see
+        # the area-conditioning block further down in run().
         if inpainting_mode == "Smart Inpaint":
             denoise = 1.0
             fine_context_pad = 0
@@ -1426,20 +1434,29 @@ class AngeloRefine:
                 mask = _gaussian_blur_2d(mask, max(0.5, sigma_latent))
                 mask = mask.clamp(0.0, 1.0)
 
-            # Area-prompt conditioning selection. When area_prompt is on
-            # AND a CLIP is connected AND there's positive area text, encode
-            # the area text and use it for this refine. Negative area text
-            # is optional — falls back to the main negative when empty
-            # (fine for CFG=1 / distilled models that ignore it anyway).
+            # Area-prompt conditioning selection. When area_prompt is on AND a
+            # CLIP is connected, the refine uses the AREA text ONLY and NEVER
+            # the main prompt — even when the Area text is empty, in which case
+            # we encode the empty string (→ an empty conditioning) rather than
+            # falling back to `positive`. This is load-bearing for the edit
+            # modes: the main positive can carry whole-image reference_latents
+            # (a Klein edit workflow's ReferenceLatent), and letting it leak in
+            # made an empty-Area-Prompt Smart Inpaint reproduce the whole scene.
+            # Negative area text is optional — falls back to the main negative
+            # when empty (fine for CFG=1 / distilled models that ignore it).
             #
-            # Smart Guided Inpaint prepends a location prefix to the
-            # positive text (e.g. "In the top left of the image, ") so the
-            # edit model places the content at the chosen spot.
+            # Smart Guided Inpaint prepends a location prefix to the positive
+            # text (e.g. "In the top left of the image, ") so the edit model
+            # places the content at the chosen spot.
+            #
+            # Without a CLIP we can't encode anything, so we must use the
+            # already-encoded main conditioning (an unavoidable degenerate case
+            # — area prompts need a CLIP connected).
             area_pos_text = str(area_text_positive)
             if inpainting_mode == "Smart Guided Inpaint":
                 prefix = _GUIDED_LOCATION_PREFIXES.get(str(guided_location), "")
                 area_pos_text = prefix + area_pos_text
-            if area_prompt and clip is not None and area_pos_text.strip():
+            if area_prompt and clip is not None:
                 tokens_p = clip.tokenize(area_pos_text)
                 refine_positive = clip.encode_from_tokens_scheduled(tokens_p)
                 if str(area_text_negative).strip():
