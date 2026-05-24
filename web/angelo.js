@@ -163,6 +163,44 @@ function installKeyboardShortcuts() {
         event.preventDefault();
         event.stopPropagation();
     }, true);  // capture phase
+
+    // Handle image paste (Ctrl+V / Cmd+V) from the OS clipboard.
+    window.addEventListener("paste", (event) => {
+        const node = _AngeloHoveredNode;
+        if (!node) return; // Only active when hovering over an Angelo canvas.
+
+        // Do not intercept if the user is pasting text into an input or textarea.
+        const activeTag = document.activeElement ? document.activeElement.tagName : "";
+        const isEditable = document.activeElement && document.activeElement.isContentEditable;
+        if (activeTag === "INPUT" || activeTag === "TEXTAREA" || isEditable) {
+            return;
+        }
+
+        if (event.clipboardData && event.clipboardData.files && event.clipboardData.files.length > 0) {
+            const imageFiles = Array.from(event.clipboardData.files).filter(f => f.type.startsWith("image/"));
+            
+            if (imageFiles.length > 0) {
+                // Strictly prevent ComfyUI from intercepting this and spawning a LoadImage node
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+                
+                let file = imageFiles[0];
+                
+                // Browsers often name pasted files generically like "image.png".
+                // Append a timestamp to make it distinct in uploads and logs.
+                if (file.name === "image.png" || !file.name) {
+                    const ext = file.type.split('/')[1] || "png";
+                    const fakeName = `pasted_${Date.now()}.${ext}`;
+                    file = new File([file], fakeName, { type: file.type });
+                }
+                
+                // Route it through the same resolution popup as Drag & Drop / Load Image.
+                showLoadImagePopup(node, file);
+            }
+        }
+    }, true);  // capture phase on window guarantees it fires before ComfyUI's document listener
+    
     dbg("installed keyboard shortcuts");
 }
 
