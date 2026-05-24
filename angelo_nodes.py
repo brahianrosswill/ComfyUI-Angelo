@@ -408,10 +408,17 @@ def _refine_with_fine_upscaling(
         return current, current_pixels
 
     scale = _fine_upscale_factor(bbox_w_lat, bbox_h_lat, scale_x, scale_y, target_mp, max_linear)
-    if scale <= 1.0:
-        # No upscale needed — fall back to the standard latent-space
-        # noise-injection inpaint. Avoids unnecessary VAE round-trips
-        # when the painted region already meets the MP target.
+    if scale <= 1.0 and inpainting_mode != "Smart Inpaint":
+        # Refine with no upscale needed — fall back to the standard latent-space
+        # noise-injection inpaint. Avoids unnecessary VAE round-trips when the
+        # painted region already meets the MP target.
+        #
+        # Smart Inpaint must NOT take this shortcut. It needs the crop +
+        # reference_latents + masked-zero treatment below regardless of rect
+        # size; skipping it made a LARGE rectangle (already at/above the MP
+        # target, so scale<=1.0 — roughly >1024px on FLUX 2) degrade to a
+        # whole-latent edit with NO crop reference, so the model worked on the
+        # whole image instead of the selected rect.
         print(f"[Angelo fine-upscale] scale=1.0 — using latent-space path (no VAE round-trip)")
         noise = comfy.sample.prepare_noise(current, seed, None)
         new_latent = comfy.sample.sample(
@@ -426,6 +433,12 @@ def _refine_with_fine_upscaling(
         # Return None for pixels because the latent was modified directly;
         # this forces a fresh VAE decode for the preview in the main run() method.
         return new_latent, None
+
+    # Smart Inpaint with a large rectangle still crops + references the selected
+    # region; it just doesn't upscale (and must never downscale) — clamp the
+    # factor to identity so the crop is taken at native resolution.
+    if inpainting_mode == "Smart Inpaint":
+        scale = max(1.0, scale)
 
     # ----- VAE decode the full cached latent → cached pixels -----
     # Optimization: Reuse cached pixels if available to prevent VAE degradation 
