@@ -593,12 +593,14 @@ function attachPreviewCanvas(node) {
     row2.appendChild(maxInput);
     node._AngeloMaxInput = maxInput;
 
-    // Ctx Pad: the fine_context_pad widget still exists on the
-    // backend (serialised on existing workflows; used by the Refine
-    // path's Fine Upscale crop with its default value). The toolbar
-    // control was removed — Smart Inpaint forces it to 0 anyway and
-    // tuning it for Refine isn't pulling its weight as a user-facing
-    // knob.
+    const ctxPadInput = makeNumberInput("Ctx Pad", { min: 0, max: 512, step: 8, width: 50 }, (val) => {
+        const w = findWidget(node, "fine_context_pad");
+        if (!w) return;
+        setWidget(w, val);
+    });
+    ctxPadInput.title = "Xtra-Fine: pixel-space padding around the painted shape bbox before cropping. Gives the model surrounding context. Only used when Xtra-Fine is ON.";
+    row2.appendChild(ctxPadInput);
+    node._AngeloCtxPadInput = ctxPadInput;
 
     // Read the resize-method options from the underlying widget enum.
     const methodWidget = findWidget(node, "resize_method");
@@ -3200,6 +3202,7 @@ function syncSmartInpaintLockedWidgets(node) {
         "_AngeloPaintModeToggle",
         "_AngeloClickRadiusInput",
         "_AngeloAreaPromptToggle",
+        "_AngeloCtxPadInput",
     ], anySmart);
 
     // Feather: live in Smart Inpaint (a soft edge can help blend the
@@ -3387,6 +3390,10 @@ function syncMaxInput(node) {
     _syncNumberInput(node._AngeloMaxInput, findWidget(node, "max_upscale")?.value);
 }
 
+function syncCtxPadInput(node) {
+    _syncNumberInput(node._AngeloCtxPadInput, findWidget(node, "fine_context_pad")?.value);
+}
+
 function syncMethodSelect(node) {
     const wrap = node._AngeloMethodSelect;
     const w = findWidget(node, "resize_method");
@@ -3462,6 +3469,7 @@ function syncAllToolbarControls(node) {
     syncSeedCtrlSelect(node);
     syncMpInput(node);
     syncMaxInput(node);
+    syncCtxPadInput(node);
     syncMethodSelect(node);
     syncInpaintModeSelect(node);
     // Row 3/4 sampler + generation controls.
