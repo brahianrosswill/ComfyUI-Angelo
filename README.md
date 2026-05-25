@@ -1,6 +1,6 @@
 # Angelo
 
-**A click-to-refine sampler for ComfyUI.** Generate an image, then click or paint on regions you want improved. Each click refines just that area while the rest stays bit-exact. One node replaces the standard `KSampler` + post-processing chain. Built and tuned for FLUX 2 Klein 9B distilled (4-step, CFG=1) — but works with any sampler-compatible model.
+**A click-to-refine sampler for ComfyUI.** Generate an image, then click or paint on regions you want improved. Each click refines just that area while the rest stays bit-exact. One node replaces the standard `KSampler` + post-processing chain. Works with **FLUX 2 Klein 9B** and **Qwen-Image-Edit** as first-class edit models — plus any other sampler-compatible model (FLUX 1, SDXL, SD 1.5).
 
 <a href="https://buymeacoffee.com/lorasandlenses"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
 
@@ -43,7 +43,7 @@ Angelo collapses that into:
 - **Paint** a freeform stroke with mouse-down + drag. Same thing but custom shape.
 - **Type an Area Prompt** right in the node to refine a region with a different prompt (e.g. main prompt = "person in forest", area prompt = "detailed photorealistic face") — no second CLIP Text Encode node needed.
 - **Toggle Xtra-Fine** to refine small regions at much higher effective resolution (the ADetailer move, but with full prompt control).
-- **Smart Inpaint** — drag a rectangle and add brand-new content with an edit model (FLUX 2 Klein etc.).
+- **Smart Inpaint** — drag a rectangle and add brand-new content with an edit model (FLUX 2 Klein 9B or Qwen-Image-Edit).
 - **Smart Guided Inpaint** — no drawing at all: pick a location from a dropdown ("top left", "center", …) + describe what to add, and the edit model places it.
 - **Detect** a region by *describing* it (optional SAM 3) — type "the face", click the highlight, and it masks the silhouette for you. No painting. Nudge the mask in/out, or Shift/Alt-drag to touch it up by hand.
 - **Re-roll** the last edit with a fresh seed on the same mask + original image, or **toggle Persistent Mask** to keep evolving a region over repeated Queues.
@@ -54,11 +54,11 @@ All in one node. All without re-queueing the whole workflow manually for each fi
 
 ## Model compatibility
 
-Angelo works with any sampler-compatible model. It's built and tuned for **FLUX 2 Klein 9B distilled**, and also runs on FLUX 1, SDXL, SD 1.5, and other standard checkpoints.
+Angelo treats **FLUX 2 Klein 9B** and **Qwen-Image-Edit** as its two first-class edit models — both get the full feature set, including the Smart inpaint modes. It also works with any other sampler-compatible model: FLUX 1, SDXL, SD 1.5, and standard checkpoints (for **Refine**, Xtra-Fine, and Area Prompt — the Smart modes need an edit-trained model).
 
-**Temporal / video-derived models (Qwen Image Edit, Wan) are supported too.** Their VAEs carry an extra temporal axis, so their latents are 5D `[B, C, T, H, W]` instead of the usual 4D `[B, C, H, W]`. Angelo handles this transparently: every VAE encode/decode routes through a single boundary that folds the frame axis for previews, and the base latent is normalised to the dimensionality each model expects before sampling (the same step ComfyUI's stock KSampler does). You don't need a Qwen-specific latent node — wire the model, `vae`, and `clip` as usual.
+Two latent layouts are handled transparently. **Standard 4D models** (FLUX, SDXL, SD) use `[B, C, H, W]` latents. **Temporal / video-derived models** (Qwen Image Edit, Wan) use 5D `[B, C, T, H, W]` latents — their VAEs carry an extra frame axis. Angelo normalises latent shape at a single VAE boundary and feeds each model the dimensionality it expects before sampling (the same step ComfyUI's stock KSampler does), so you don't need a model-specific latent node — wire `model`, `vae`, and `clip` as usual.
 
-For the **Smart** inpaint modes specifically, use an **edit-trained** checkpoint (FLUX 2 Klein 9B, **Qwen-Image-Edit** — not plain Qwen-Image). See [Inpainting Mode](#inpainting-mode-refine--smart-inpaint--smart-guided-inpaint) for why. **Refine** (incl. Xtra-Fine and Area Prompt) works on any model.
+For the **Smart** inpaint modes, use an **edit-trained** checkpoint — **FLUX 2 Klein 9B** or **Qwen-Image-Edit** (not plain Qwen-Image, which has the reference code path but isn't trained for it; see [Inpainting Mode](#inpainting-mode-refine--smart-inpaint--smart-guided-inpaint)). **Refine** (incl. Xtra-Fine and Area Prompt) works on any model.
 
 ## Install
 
@@ -71,7 +71,9 @@ git clone https://github.com/shootthesound/ComfyUI-Angelo.git
 
 Restart ComfyUI. No additional Python dependencies for the core node. (The optional **Detect** feature adds SAM 3 — see [Detect](#detect--auto-segment-with-sam-3-optional) for its one-time opt-in installer.)
 
-## Quick start (FLUX 2 Klein 9B distilled)
+## Quick start
+
+### FLUX 2 Klein 9B distilled
 
 **Just want it running?** Drag [`workflows/Klein9b-example.json`](workflows/Klein9b-example.json) onto the ComfyUI canvas — it's a complete FLUX 2 Klein 9B graph (UNet / CLIP / VAE loaders → Angelo → Save Image) wired and ready. Point the loaders at your model files and queue.
 
@@ -90,6 +92,12 @@ To wire it from scratch instead:
 6. Click a region on the preview. Angelo refines that spot.
 
 That's the loop. Click → refine → click → refine. Undo if needed. Reset to start over from the cached base.
+
+### Qwen-Image-Edit
+
+Wire it exactly the same way — `model` / `vae` / `clip` / `positive` / `negative` — but point the loaders at a **Qwen-Image-Edit** checkpoint, its VAE, and its text encoder. There's no Qwen-specific latent node to add; Angelo normalises the latent shape internally.
+
+Qwen-Image-Edit isn't distilled like Klein, so adjust the toolbar generation settings to suit it — typically more steps and CFG > 1 (or a low-step Lightning / Lightx2v LoRA if you run one, which lets you drop back toward 4–8 steps at CFG ≈ 1). Everything else is identical: Sampler Mode to generate, then Edit Mode for Refine / Xtra-Fine / Area Prompt / Smart Inpaint / Smart Guided Inpaint.
 
 ## The two modes
 
@@ -164,7 +172,7 @@ The **Mode** switch sits centred up top. Below it, the generation block (always 
 | Control | What it does |
 |---|---|
 | **Mode ▾** | Sampler Mode (generate the base) vs Edit Mode (click/paint/drag to refine). Centred at the top of the node |
-| **Steps / CFG / Sampler ▾ / Sched ▾** | Sampler config, shared by base gen and refines. Klein 9B distilled: 4 / 1.0 / euler / simple |
+| **Steps / CFG / Sampler ▾ / Sched ▾** | Sampler config, shared by base gen and refines. Klein 9B distilled: 4 / 1.0 / euler / simple. Qwen-Image-Edit: more steps + CFG > 1 (or a low-step Lightning LoRA) |
 | **Smpl Seed / Smpl Ctrl ▾ / Smpl Denoise** | Seed, after-generate control, and denoise for the base generation (Sampler Mode) |
 
 ### Edit block — actions + toggles
@@ -253,7 +261,7 @@ Three options for how a region is treated. The two Smart modes need an **edit-tr
 
 ### Why Smart Inpaint exists
 
-An edit model like FLUX 2 Klein has no concept of a mask — it takes a reference image + a prompt and produces an edited image. The painted shape only constrains *where the result is composited*, not what the model generates. Smart Inpaint addresses this by (a) cropping to the dragged rectangle so the model's working region is the area you care about, (b) injecting **that cropped region** as `reference_latents` so the edit branch sees the local context (the reference is the crop only — never the whole image), and (c) zeroing the masked latent so the model fills it as new content rather than refining what was there.
+An edit model like FLUX 2 Klein or Qwen-Image-Edit has no concept of a mask — it takes a reference image + a prompt and produces an edited image. The painted shape only constrains *where the result is composited*, not what the model generates. Smart Inpaint addresses this by (a) cropping to the dragged rectangle so the model's working region is the area you care about, (b) injecting **that cropped region** as `reference_latents` so the edit branch sees the local context (the reference is the crop only — never the whole image), and (c) zeroing the masked latent so the model fills it as new content rather than refining what was there.
 
 Typical "add a person on the road" workflow:
 
@@ -287,7 +295,7 @@ Example — Location `Right edge`, prompt `"A sheep jumping up and down"`, hit G
 <tr><td><img src="screenshots/smart-guided-before.png" width="400" alt="Smart Guided before"></td><td><img src="screenshots/smart-guided-after.png" width="400" alt="Smart Guided after"></td></tr>
 </table>
 
-Honest expectations: text-based placement is fuzzy by nature. Coarse regions ("top half", "bottom of the image", "center") land most reliably; fine ones are looser. FLUX 2 Klein honors these phrases well in practice. Use Smart Inpaint when you need *precise* placement, Smart Guided when you want a *quick, no-draw* edit.
+Honest expectations: text-based placement is fuzzy by nature. Coarse regions ("top half", "bottom of the image", "center") land most reliably; fine ones are looser. FLUX 2 Klein and Qwen-Image-Edit honor these phrases well in practice. Use Smart Inpaint when you need *precise* placement, Smart Guided when you want a *quick, no-draw* edit.
 
 **Insert Smart Phrasing** (a button under the Area Prompt box, shown in both Smart modes) opens a popup of edit-preservation constraints — *keep the lighting / pose / clothes / faces the same* — and appends the ticked ones to your Area Prompt. Handy for keeping the rest of the subject stable while changing one thing.
 
