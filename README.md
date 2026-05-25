@@ -95,7 +95,9 @@ That's the loop. Click → refine → click → refine. Undo if needed. Reset to
 
 ### Qwen-Image-Edit
 
-Wire it exactly the same way — `model` / `vae` / `clip` / `positive` / `negative` — but point the loaders at a **Qwen-Image-Edit** checkpoint, its VAE, and its text encoder. There's no Qwen-specific latent node to add; Angelo normalises the latent shape internally.
+**Just want it running?** Drag [`workflows/Qwen Edit 2511 example.json`](workflows/Qwen%20Edit%202511%20example.json) onto the ComfyUI canvas — a complete Qwen-Image-Edit 2511 graph wired to Angelo. Point the loaders at your model files and queue.
+
+To wire it from scratch, do it exactly the same way as Klein — `model` / `vae` / `clip` / `positive` / `negative` — but point the loaders at a **Qwen-Image-Edit** checkpoint, its VAE, and its text encoder. There's no Qwen-specific latent node to add; Angelo normalises the latent shape internally.
 
 Qwen-Image-Edit isn't distilled like Klein, so adjust the toolbar generation settings to suit it — typically more steps and CFG > 1 (or a low-step Lightning / Lightx2v LoRA if you run one, which lets you drop back toward 4–8 steps at CFG ≈ 1). Everything else is identical: Sampler Mode to generate, then Edit Mode for Refine / Xtra-Fine / Area Prompt / Smart Inpaint / Smart Guided Inpaint.
 
