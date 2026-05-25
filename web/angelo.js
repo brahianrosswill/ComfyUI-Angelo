@@ -1495,6 +1495,30 @@ function attachPreviewCanvas(node) {
         getMinHeight: () => 320,
     });
 
+    // Make the preview widget fill the node's full width.
+    //
+    // LiteGraph computes a DOM widget's wrapper-element width as
+    //     (widget.width ?? node.width) - 2 * margin
+    // (see the Vue node renderer). The `?? node.width` fallback gives full
+    // width ONLY while `widget.width` is unset; once LiteGraph's widget-draw
+    // path assigns `widget.width` (it sets it to the narrow content-min when
+    // the node's hidden widgets report ~340), that pinned value wins. So a
+    // node dragged wide shows a wide frame but the preview collapses to ~340
+    // on the left, and any relayout (e.g. clicking a control) re-pins it.
+    // Defining `width` as a getter that always returns the live node width
+    // keeps the wrapper at full width and ignores the narrow re-pin. Setter is
+    // a no-op so LiteGraph's assignment can't shrink it again.
+    try {
+        Object.defineProperty(widget, "width", {
+            configurable: true,
+            enumerable: true,
+            get() { return node.size ? node.size[0] : undefined; },
+            set(_v) { /* ignore — width is derived from the node, see above */ },
+        });
+    } catch (e) {
+        dbg("could not pin widget.width getter", e);
+    }
+
     node._AngeloWidget = widget;
     node._AngeloCanvas = canvas;
     node._AngeloCanvasWrap = canvasWrap;
