@@ -52,6 +52,14 @@ Angelo collapses that into:
 
 All in one node. All without re-queueing the whole workflow manually for each fix.
 
+## Model compatibility
+
+Angelo works with any sampler-compatible model. It's built and tuned for **FLUX 2 Klein 9B distilled**, and also runs on FLUX 1, SDXL, SD 1.5, and other standard checkpoints.
+
+**Temporal / video-derived models (Qwen Image Edit, Wan) are supported too.** Their VAEs carry an extra temporal axis, so their latents are 5D `[B, C, T, H, W]` instead of the usual 4D `[B, C, H, W]`. Angelo handles this transparently: every VAE encode/decode routes through a single boundary that folds the frame axis for previews, and the base latent is normalised to the dimensionality each model expects before sampling (the same step ComfyUI's stock KSampler does). You don't need a Qwen-specific latent node — wire the model, `vae`, and `clip` as usual.
+
+For the **Smart** inpaint modes specifically, use an **edit-trained** checkpoint (FLUX 2 Klein 9B, **Qwen-Image-Edit** — not plain Qwen-Image). See [Inpainting Mode](#inpainting-mode-refine--smart-inpaint--smart-guided-inpaint) for why. **Refine** (incl. Xtra-Fine and Area Prompt) works on any model.
+
 ## Install
 
 Clone into your `ComfyUI/custom_nodes/`:
@@ -233,7 +241,7 @@ In short: **Re-roll** = "try this edit again on the original"; **Persistent Mask
 
 ## Inpainting Mode (Refine / Smart Inpaint / Smart Guided Inpaint)
 
-Three options for how a region is treated. The two Smart modes need an **edit model** (FLUX 2 Klein 9B etc.) and a wired `CLIP`.
+Three options for how a region is treated. The two Smart modes need an **edit-trained model** (FLUX 2 Klein 9B, **Qwen-Image-Edit**, etc.) and a wired `CLIP`. They work by injecting `reference_latents`, so a **base** text-to-image checkpoint (e.g. plain Qwen-Image, not the *Edit* variant) will produce colour-distorted output — it has the reference code path but its weights were never trained for it. Use the Edit variant for Smart Inpaint / Smart Guided Inpaint; **Refine** works on any model.
 
 ![Inpaint mode dropdown](screenshots/inpaint-modes.png)
 

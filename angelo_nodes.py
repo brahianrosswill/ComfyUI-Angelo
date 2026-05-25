@@ -344,6 +344,50 @@ def _resize_latent(t: torch.Tensor, target_h: int, target_w: int, method: str) -
     raise ValueError(f"_resize_latent: unexpected ndim {t.dim()}")
 
 
+# ----- VAE boundary -----
+# Every latent->pixel and pixel->latent conversion in the node routes
+# through these two functions. Centralising them means model-family
+# quirks live in ONE place instead of at ~7 scattered call sites. The
+# motivating case is Qwen Image Edit / Wan-derived VAEs, whose latents
+# carry an extra temporal axis ([B, C, T, H, W] with T=1) that the rest
+# of the node — and PIL's previewer — expect to be absent ([B, C, H, W]).
+# Both helpers are thin pass-throughs today; this is the seam where that
+# 5D normalisation will land without disturbing any caller.
+def _vae_decode(vae, latent: torch.Tensor) -> torch.Tensor:
+    """Decode a latent to pixels. Single decode chokepoint — see the
+    VAE-boundary note above. Always returns a 4D image batch
+    (B, H, W, C) float in [0, 1].
+
+    Temporal/video VAEs (Qwen Image Edit, Wan) keep a frame axis: their
+    latents are 5D ([B, C, T, H, W]) and `vae.decode` accordingly returns
+    a 5D frame stack ([B, T, H, W, C] — ComfyUI moves channels last). The
+    rest of the node, and ComfyUI's PreviewImage/PIL path, only understand
+    4D image batches, so fold the frame axis into the batch dim. For image
+    editing T is 1, so this is just dropping the singleton frame axis; if a
+    future model ever produces T>1 the frames surface as extra batch items
+    rather than crashing. The latent is passed through to `vae.decode`
+    untouched — the video VAE wants its native 5D input — we only normalise
+    the *pixels* it returns."""
+    image = vae.decode(latent)
+    if image.ndim == 5:
+        b, t, h, w, c = image.shape
+        image = image.reshape(b * t, h, w, c)
+    return image
+
+
+def _vae_encode(vae, pixels: torch.Tensor) -> torch.Tensor:
+    """Encode pixels to latent samples. Single encode chokepoint —
+    counterpart to _vae_decode. See the VAE-boundary note above.
+
+    Deliberately returns the VAE's native latent shape WITHOUT collapsing
+    it: a temporal/video VAE (Qwen, Wan) returns a 5D latent
+    ([B, C, T, H, W]) and the sampler + model require that 5D shape to flow
+    through unchanged (comfy.sample.sample is ndim-agnostic and prepare_noise
+    matches the latent's shape exactly). Squeezing the frame axis here would
+    break Qwen sampling — do not add a squeeze."""
+    return vae.encode(pixels)
+
+
 def _refine_with_fine_upscaling(
     *,
     model,
@@ -446,7 +490,7 @@ def _refine_with_fine_upscaling(
     if current_pixels is not None:
         cached_pixels = current_pixels
     else:
-        cached_pixels = vae.decode(current)  # (B, H_pix, W_pix, C) float [0,1]
+        cached_pixels = _vae_decode(vae, current)  # (B, H_pix, W_pix, C) float [0,1]
         
     H_pix = cached_pixels.shape[1]
     W_pix = cached_pixels.shape[2]
@@ -485,7 +529,7 @@ def _refine_with_fine_upscaling(
     pixel_crop_up = pixel_crop_up_chw.movedim(1, -1)  # back to (B, H, W, C)
 
     # ----- VAE encode the upscaled pixel crop → latent at high res -----
-    latent_up = vae.encode(pixel_crop_up)
+    latent_up = _vae_encode(vae, pixel_crop_up)
     target_h_lat = latent_up.shape[-2]
     target_w_lat = latent_up.shape[-1]
 
@@ -542,7 +586,7 @@ def _refine_with_fine_upscaling(
     )
 
     # ----- VAE decode refined latent → high-res pixel patch -----
-    refined_pixel_up = vae.decode(refined_latent_up)  # (B, target_h_p, target_w_p, C)
+    refined_pixel_up = _vae_decode(vae, refined_latent_up)  # (B, target_h_p, target_w_p, C)
 
     # ----- Downscale refined patch back to original bbox pixel size -----
     refined_pixel_up_chw = refined_pixel_up.movedim(-1, 1)
@@ -569,7 +613,7 @@ def _refine_with_fine_upscaling(
     new_pixels[:, y0_p:y1_p, x0_p:x1_p, :] = composited
 
     # ----- VAE encode the composited full image → encoded latent -----
-    encoded_latent = vae.encode(new_pixels)
+    encoded_latent = _vae_encode(vae, new_pixels)
 
     # ----- Blend in LATENT space using the feathered mask as alpha -----
     # The VAE encode is lossy, so naively returning encoded_latent would
@@ -703,7 +747,7 @@ def _encode_loaded_image(vae, ref_json: str, resize_mode: str, target_mp: float)
 
     arr = np.array(img).astype(np.float32) / 255.0      # (H, W, 3)
     pixels = torch.from_numpy(arr)[None, ...]            # (1, H, W, 3)
-    samples = vae.encode(pixels[:, :, :, :3])
+    samples = _vae_encode(vae, pixels[:, :, :, :3])
     return samples
 
 
@@ -714,7 +758,7 @@ def _decode_to_preview(vae, latent_samples: torch.Tensor):
     Returns (image_tensor, list_of_image_refs). Each image ref is a
     {filename, subfolder, type} dict.
     """
-    image = vae.decode(latent_samples)  # (B, H, W, C) float in [0, 1]
+    image = _vae_decode(vae, latent_samples)  # (B, H, W, C) float in [0, 1]
 
     # Reuse PreviewImage's save logic via a transient instance.
     previewer = comfy_nodes.PreviewImage()
@@ -1133,6 +1177,22 @@ class AngeloRefine:
                 "Angelo: no base image — connect a `latent` input or use the "
                 "Load Image button."
             )
+
+        # Normalise the base latent to the dimensionality the MODEL expects.
+        # ComfyUI's stock KSampler runs the latent through
+        # fix_empty_latent_channels before sampling; Angelo calls
+        # comfy.sample.sample directly, so it must do this itself. The
+        # load-bearing case is video/temporal VAEs (Qwen Image Edit, Wan):
+        # their diffusion model wants a 5D latent [B, C, T, H, W], and a 4D
+        # [B, C, H, W] base (e.g. from a plain EmptyLatentImage, or any path
+        # that didn't go through a Qwen-aware latent node) makes process_img
+        # fail with "not enough values to unpack (expected 5, got 4)". This
+        # unsqueezes the temporal axis (and channel-pads an empty latent) for
+        # those models; for ordinary 4D models (FLUX/SDXL/SD) it is a no-op,
+        # and an already-5D latent is returned unchanged. Done once here so
+        # every downstream path — Sampler Mode, the Edit-Mode history seed,
+        # the fingerprint, and the refine round-trips — sees the right shape.
+        incoming = comfy.sample.fix_empty_latent_channels(model, incoming)
         incoming_fp = _latent_fingerprint(incoming)
 
         # ===== Smart Inpaint locks =====
@@ -1585,7 +1645,7 @@ class AngeloRefine:
             if src_latent is None:
                 h0 = state["history"][0]
                 src_latent = h0[0] if isinstance(h0, tuple) else h0
-            source_image = vae.decode(src_latent)
+            source_image = _vae_decode(vae, src_latent)
             state["source_pixels"] = source_image
 
         return {"ui": ui_msg, "result": (image, out_latent, source_image)}
