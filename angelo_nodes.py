@@ -565,13 +565,34 @@ def _refine_with_fine_upscaling(
     # reference, and the whole-image one dominated — so the patch reproduced
     # the entire original scene instead of editing the selected region.
     # Replacing guarantees Klein sees the crop and nothing else.
+    # Mask used for the SAMPLING step (both the masked-zero and the noise_mask).
+    # Defaults to the feathered mask; hardened to binary for Smart Inpaint on
+    # 5D temporal latents — see the note in the Smart Inpaint block below.
+    sample_mask = mask_crop_up
     if inpainting_mode == "Smart Inpaint":
         reference_latent = latent_up.clone()
         positive = node_helpers.conditioning_set_values(
             positive, {"reference_latents": [reference_latent]}, append=False,
         )
-        m = mask_crop_up.unsqueeze(0)
-        latent_up = (1.0 - m) * latent_up
+        # Feather goes in the COMPOSITE, not the denoise mask — for Qwen/Wan.
+        #
+        # FLUX/Klein (4D, ~zero-mean latents): a soft mask works directly as
+        # both the masked-zero and the noise_mask; their inpaint blend handles a
+        # soft boundary cleanly, so keep the feathered mask.
+        #
+        # Qwen Image Edit / Wan (5D temporal latents): sample with a HARD
+        # (binary) mask. These models have no clean soft-mask-during-denoise
+        # behaviour — the community-standard Qwen-edit inpaint recipe is "blank
+        # the region, regenerate, then composite back with a feathered blend",
+        # NOT feathering the denoise mask. A soft noise_mask at denoise=1.0 on a
+        # non-zero-mean latent space distorts exactly the feather band (the
+        # symptom: artifacts only where the feathering happens). The smooth
+        # visible edge is still produced downstream by the feathered PIXEL
+        # composite + final latent blend (both use the full-res feathered
+        # `mask`), so the feather is preserved without the sampling artifacts.
+        if latent_up.ndim == 5:
+            sample_mask = (mask_crop_up >= 0.5).to(mask_crop_up.dtype)
+        latent_up = (1.0 - sample_mask.unsqueeze(0)) * latent_up
 
     # ----- Refine via noise-injection inpaint on the upscaled latent -----
     noise = comfy.sample.prepare_noise(latent_up, seed, None)
@@ -579,7 +600,7 @@ def _refine_with_fine_upscaling(
         model, noise, steps, cfg, sampler_name, scheduler,
         positive, negative, latent_up,
         denoise=denoise,
-        noise_mask=mask_crop_up,
+        noise_mask=sample_mask,
         callback=callback,
         disable_pbar=disable_pbar,
         seed=seed,
