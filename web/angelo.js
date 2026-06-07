@@ -1103,8 +1103,17 @@ function attachPreviewCanvas(node) {
         event.stopPropagation();   // don't also zoom the ComfyUI graph
         const wrapW = canvasWrap.clientWidth, wrapH = canvasWrap.clientHeight;
         const wrapRect = canvasWrap.getBoundingClientRect();
-        const cx = event.clientX - wrapRect.left;
-        const cy = event.clientY - wrapRect.top;
+        // Convert cursor from viewport pixels to wrap-layout pixels.
+        // ComfyUI applies a CSS transform: scale() on the graph container
+        // when the user zooms the graph; getBoundingClientRect() reflects
+        // that scale (visual pixels) while clientWidth/Height stay at the
+        // unscaled layout size. Without dividing by the ratio the cursor
+        // anchor drifts sideways under graph zoom and the image walks off
+        // on each wheel tick. Thanks to @KursatAs (#23) for the diagnosis.
+        const graphScaleX = wrapRect.width > 0 ? wrapRect.width / wrapW : 1;
+        const graphScaleY = wrapRect.height > 0 ? wrapRect.height / wrapH : 1;
+        const cx = (event.clientX - wrapRect.left) / graphScaleX;
+        const cy = (event.clientY - wrapRect.top) / graphScaleY;
         const oldZoom = node._AngeloZoom || 1;
         const factor = event.deltaY < 0 ? 1.15 : (1 / 1.15);
         const newZoom = Math.max(0.25, Math.min(8, oldZoom * factor));
