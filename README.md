@@ -75,7 +75,7 @@ Restart ComfyUI. No additional Python dependencies for the core node. (The optio
 
 ### FLUX 2 Klein 9B distilled
 
-**Just want it running?** Drag [`workflows/Klein9b-example.json`](workflows/Klein9b-example.json) onto the ComfyUI canvas — it's a complete FLUX 2 Klein 9B graph (UNet / CLIP / VAE loaders → Angelo → Save Image) wired and ready. Point the loaders at your model files and queue.
+**Just want it running?** ComfyUI auto-lists this under **Workflow → Browse Templates → ComfyUI-Angelo** (the `example_workflows/` folder), or drag [`example_workflows/Klein9b-example.json`](example_workflows/Klein9b-example.json) onto the canvas — it's a complete FLUX 2 Klein 9B graph (UNet / CLIP / VAE loaders → Angelo → Save Image) wired and ready. Point the loaders at your model files and queue.
 
 To wire it from scratch instead:
 
@@ -95,7 +95,7 @@ That's the loop. Click → refine → click → refine. Undo if needed. Reset to
 
 ### Qwen-Image-Edit
 
-**Just want it running?** Drag [`workflows/Qwen Edit 2511 example.json`](workflows/Qwen%20Edit%202511%20example.json) onto the ComfyUI canvas — a complete Qwen-Image-Edit 2511 graph wired to Angelo. Point the loaders at your model files and queue.
+**Just want it running?** ComfyUI auto-lists this under **Workflow → Browse Templates → ComfyUI-Angelo**, or drag [`example_workflows/Qwen Edit 2511 example.json`](example_workflows/Qwen%20Edit%202511%20example.json) onto the canvas — a complete Qwen-Image-Edit 2511 graph wired to Angelo. Point the loaders at your model files and queue.
 
 To wire it from scratch, do it exactly the same way as Klein — `model` / `vae` / `clip` / `positive` / `negative` — but point the loaders at a **Qwen-Image-Edit** checkpoint, its VAE, and its text encoder. There's no Qwen-specific latent node to add; Angelo normalises the latent shape internally.
 
