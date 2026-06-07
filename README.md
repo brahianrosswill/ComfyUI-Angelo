@@ -181,6 +181,8 @@ The **Mode** switch sits centred up top. Below it, the generation block (always 
 
 The Overrides node also carries **`disable_live_preview`** — flip this ON if ComfyUI's global latent preview (Settings → Preview method = Latent2RGB / TAESD) is rendering into the Angelo node mid-sample and squashing the editor area. It suppresses the preview callback for this Angelo only, so KSampler etc. elsewhere in your workflow keep their previews.
 
+**Full custom sampler control (power-sigma, Flux 2 scheduler, NAG-Extended, custom guiders).** The Overrides node exposes three more optional slots — **`guider`** / **`sampler`** / **`sigmas`** — for replacing the whole sampler stack rather than just renaming pieces of it. Wire any `GUIDER` node (`CFGGuider`, `BasicGuider`, NAG variants, etc.), any `SAMPLER` (`KSamplerSelect` and friends), and any `SIGMAS` source (`BasicScheduler`, `KarrasScheduler`, `PolyexponentialScheduler`, power-sigma nodes, the Flux 2 scheduler) into those three slots. When all three are wired Angelo runs through `guider.sample(...)` instead of `comfy.sample.sample(...)` — the toolbar's `steps`/`cfg`/`sampler_name`/`scheduler` become moot, but the **Denoise** slider still applies (sigmas are tail-sliced per call, same as ComfyUI's `SplitSigmasDenoise`). Partial wiring (e.g. only `sampler`) silently falls back to the default. The implementation borrows three helpers from [@KursatAs](https://github.com/KursatAs)'s `customSampler` branch — full credit there, including the device-safe wrapper that fixes a CPU/GPU collision in ComfyUI-NAG-Extended's inpaint path.
+
 ### Edit block — actions + toggles
 
 | Control | What it does |
