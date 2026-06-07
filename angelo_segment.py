@@ -320,14 +320,27 @@ if _HAS_SERVER:
         except Exception as e:
             return web.json_response({"error": f"could not load preview: {e}"}, status=400)
 
-        # Run the (blocking, GPU) detection off the event loop.
+        # Run the (blocking, GPU) detection off the event loop. On WSL /
+        # containerised CUDA, the executor thread occasionally trips a
+        # spurious torch.OutOfMemoryError on first allocation despite ample
+        # free VRAM (CUDA's per-thread context bookkeeping doesn't see what
+        # the main thread already reserved). Fall back to a synchronous
+        # main-thread run when that specific failure mode shows up — it
+        # blocks the event loop briefly but unblocks the user. Thanks to
+        # @FNGarvin (#19) for the diagnosis.
         import asyncio
+        import torch
         loop = asyncio.get_event_loop()
         try:
             if method == "sam3_text":
-                result = await loop.run_in_executor(
-                    None, detect_text, pil, text, threshold, max_det
-                )
+                try:
+                    result = await loop.run_in_executor(
+                        None, detect_text, pil, text, threshold, max_det
+                    )
+                except torch.cuda.OutOfMemoryError:
+                    print("[Angelo/SAM3] Background-thread CUDA allocation failed — "
+                          "retrying on the main thread (WSL/container quirk).")
+                    result = detect_text(pil, text, threshold, max_det)
             else:
                 return web.json_response({"error": f"unknown method '{method}'"}, status=400)
         except Exception as e:
