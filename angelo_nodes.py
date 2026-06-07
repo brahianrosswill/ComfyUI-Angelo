@@ -30,6 +30,7 @@ import math
 import os
 import torch
 
+import comfy.model_management
 import comfy.sample
 import comfy.samplers
 import comfy.utils
@@ -91,12 +92,23 @@ def _guider_sample(
     latent = latent.to(device)
     if denoise_mask is not None:
         denoise_mask = denoise_mask.to(device)
-    return temp_g.sample(
+    samples = temp_g.sample(
         noise, latent, sampler, sigmas,
         denoise_mask=denoise_mask,
         callback=callback,
         disable_pbar=disable_pbar,
         seed=seed,
+    )
+    # Mirror comfy.sample.sample()'s exit move so the rest of Angelo's
+    # pipeline (VAE decode, pixel composite, latent blend in Fine Upscale)
+    # sees the same intermediate device + dtype it does on the default
+    # path. Without this, the guider path returns the sampled latent on
+    # the model's load_device (cuda) while cached_pixels / mask are on
+    # intermediate_device (typically CPU), causing a device-mismatch at
+    # the composite step in _refine_with_fine_upscaling.
+    return samples.to(
+        device=comfy.model_management.intermediate_device(),
+        dtype=comfy.model_management.intermediate_dtype(),
     )
 
 
