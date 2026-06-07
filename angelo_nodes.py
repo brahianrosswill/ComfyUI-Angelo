@@ -1165,10 +1165,13 @@ class AngeloRefine:
         overrides=None,
         unique_id=None,
     ):
-        # Optional upstream overrides (#25): if an ANGELO_OVERRIDES bundle
-        # is wired in, its non-None entries beat the toolbar widget values.
+        # Optional upstream overrides: if an ANGELO_OVERRIDES bundle is
+        # wired in, its non-None entries beat the toolbar widget values.
         # Kept here at the top so every downstream code path sees the
         # effective value without each one having to know about the override.
+        # Carries sampler-config (#25) plus display flags like
+        # disable_live_preview (#21).
+        disable_live_preview = False
         if isinstance(overrides, dict):
             if overrides.get("steps") is not None:
                 steps = overrides["steps"]
@@ -1178,6 +1181,7 @@ class AngeloRefine:
                 sampler_name = overrides["sampler_name"]
             if overrides.get("scheduler") is not None:
                 scheduler = overrides["scheduler"]
+            disable_live_preview = bool(overrides.get("disable_live_preview"))
 
         node_id = str(unique_id)
         state = _STATE.get(node_id)
@@ -1284,7 +1288,10 @@ class AngeloRefine:
         # the result as the new base. All toolbar / canvas / refine logic is
         # skipped — those are Edit Mode concerns.
         if mode == "Sampler Mode":
-            callback = latent_preview.prepare_callback(model, steps)
+            # #21: skip the live-preview callback when the user has
+            # disabled it via Overrides — keeps ComfyUI's global preview
+            # on for other samplers but stops it squashing Angelo's editor.
+            callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
             disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
             noise = comfy.sample.prepare_noise(incoming, sampler_seed, None)
             new_latent = comfy.sample.sample(
@@ -1606,7 +1613,9 @@ class AngeloRefine:
             # widget locked, click_seq's increment still moved the effective
             # sampling seed. Now the user has explicit control.
             this_seed = int(seed)
-            callback = latent_preview.prepare_callback(model, steps)
+            # #21: skip the live-preview callback when the user has
+            # disabled it via Overrides — see Sampler Mode branch above.
+            callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
             disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
 
             # Source latent = the current cached latent for every path (see
@@ -1703,13 +1712,18 @@ class AngeloRefine:
 
 
 class AngeloOverrides:
-    """Companion node for #25: bundle steps / cfg / sampler / scheduler
-    into a single ANGELO_OVERRIDES dict, wire it into Angelo's `overrides`
-    slot, and the toolbar values are replaced by these for that run. Any
-    field left at its sentinel ("(toolbar)" for the combo dropdowns, -1
-    for INT / FLOAT) means "don't override this one — use Angelo's
-    toolbar value as normal", so a partial override (e.g. only steps) is
-    a first-class workflow."""
+    """Companion node: bundle non-default Angelo settings into a single
+    ANGELO_OVERRIDES dict, wire it into Angelo's `overrides` slot, and
+    Angelo applies any non-sentinel field for that run. Originally added
+    for #25 (sampler-config overrides). Also carries display flags like
+    `disable_live_preview` (#21) so a single companion node covers every
+    "drive this from the workflow instead of the toolbar" use case.
+
+    Sampler-config fields use sentinel defaults ("(toolbar)" for the
+    combo dropdowns, -1 for INT / FLOAT) meaning "don't override this
+    one — use Angelo's toolbar value". Display flags default to the
+    same behaviour Angelo has without an Overrides node connected, so
+    leaving them alone is a no-op."""
 
     _SENTINEL = "(toolbar)"
 
@@ -1727,6 +1741,14 @@ class AngeloOverrides:
                 "scheduler": ([cls._SENTINEL] + list(comfy.samplers.KSampler.SCHEDULERS),
                               {"default": cls._SENTINEL,
                                "tooltip": "(toolbar) = use Angelo's toolbar value."}),
+                "disable_live_preview": ("BOOLEAN", {"default": False,
+                                                     "tooltip": "When ON, suppress ComfyUI's "
+                                                                "live latent preview for this "
+                                                                "Angelo node only (#21). "
+                                                                "Useful if the global preview "
+                                                                "is squashing Angelo's editor "
+                                                                "area but you still want previews "
+                                                                "on your other samplers."}),
             },
         }
 
@@ -1735,18 +1757,19 @@ class AngeloOverrides:
     FUNCTION = "build"
     CATEGORY = "sampling/Angelo"
     DESCRIPTION = (
-        "Bundle steps / cfg / sampler / scheduler into one wire that "
-        "drives Angelo's sampler config from your workflow instead of "
-        "its toolbar. Any field left at the sentinel default falls "
-        "through to Angelo's toolbar value (per-field opt-in)."
+        "Bundle Angelo settings into one wire that drives them from "
+        "your workflow instead of the toolbar: steps / cfg / sampler / "
+        "scheduler (per-field opt-in via sentinel defaults), plus the "
+        "disable_live_preview flag for #21."
     )
 
-    def build(self, steps, cfg, sampler_name, scheduler):
+    def build(self, steps, cfg, sampler_name, scheduler, disable_live_preview):
         bundle = {
             "steps": steps if isinstance(steps, int) and steps >= 1 else None,
             "cfg": float(cfg) if isinstance(cfg, (int, float)) and cfg >= 0 else None,
             "sampler_name": sampler_name if sampler_name != self._SENTINEL else None,
             "scheduler": scheduler if scheduler != self._SENTINEL else None,
+            "disable_live_preview": bool(disable_live_preview),
         }
         return (bundle,)
 
