@@ -23,6 +23,7 @@ The cache is in-process state only — restart of ComfyUI clears it.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -52,6 +53,132 @@ import nodes as comfy_nodes
 #     "fingerprint": str,          # hash of incoming latent; mismatch = upstream changed
 #   }
 _STATE: dict[str, dict] = {}
+
+# ---- Custom-sampler helpers (#8) -----------------------------------------
+# These three helpers + the _do_sample wrapper below let users wire a
+# GUIDER + SAMPLER + SIGMAS bundle through Angelo — Overrides into Angelo
+# in place of the toolbar's steps / cfg / sampler_name / scheduler. The
+# helpers themselves are taken verbatim from @KursatAs's customSampler
+# branch (https://github.com/KursatAs/ComfyUI-Angelo/tree/customSampler);
+# the integration shape (optional via Overrides rather than required on
+# the main node) is the Angelo adaptation. Full credit to him for the
+# NAG-Extended fix encoded in _guider_sample.
+
+def _guider_sample(
+        temp_g,
+        noise: torch.Tensor,
+        latent: torch.Tensor,
+        sampler,
+        sigmas: torch.Tensor,
+        *,
+        denoise_mask: torch.Tensor | None = None,
+        callback=None,
+        disable_pbar: bool = False,
+        seed: int | None = None,
+) -> torch.Tensor:
+    """Device-safe wrapper around guider.sample(). (From @KursatAs.)
+
+    ComfyUI's built-in CFGGuider.sample() moves noise, latent, and
+    denoise_mask to the model's load device before sampling. Some
+    third-party extensions (e.g. ComfyUI-NAG-Extended) override
+    inner_sample() without repeating that movement, so CPU tensors
+    survive into the k-sampler's inpaint path where they collide with
+    GPU tensors and raise a device-mismatch RuntimeError. Moving
+    everything to load_device here is a safe no-op when the built-in
+    already does it, and fixes the crash for extensions that don't."""
+    device = temp_g.model_patcher.load_device
+    noise = noise.to(device)
+    latent = latent.to(device)
+    if denoise_mask is not None:
+        denoise_mask = denoise_mask.to(device)
+    return temp_g.sample(
+        noise, latent, sampler, sigmas,
+        denoise_mask=denoise_mask,
+        callback=callback,
+        disable_pbar=disable_pbar,
+        seed=seed,
+    )
+
+
+def _guider_with_conds(guider, positive, negative):
+    """Copy a wired GUIDER and apply Angelo's per-call positive/negative
+    conds to it. Handles both CFGGuider (takes both conds) and
+    BasicGuider (positive only). (From @KursatAs.) Lets the user wire
+    a generic guider once and Angelo keeps using its dynamic conds
+    (Refine vs Area Prompt vs Smart Inpaint reference_latents etc.)
+    for each sample call."""
+    g = copy.copy(guider)
+    try:
+        g.set_conds(positive, negative)  # comfy.samplers.CFGGuider
+    except TypeError:
+        g.set_conds(positive)            # BasicGuider / BaseGuider
+    return g
+
+
+def _truncate_sigmas_for_denoise(sigmas: torch.Tensor, denoise: float) -> torch.Tensor:
+    """Tail-slice the wired SIGMAS tensor by Angelo's per-call denoise,
+    matching ComfyUI's SplitSigmasDenoise convention. (From @KursatAs.)
+    A wired sigmas tensor comes pre-baked from a scheduler node at
+    denoise=1.0; Angelo applies its own refine denoise here so the
+    refine slider keeps meaning what it did before."""
+    if denoise >= 1.0:
+        return sigmas
+    if denoise <= 0.0:
+        return sigmas[-1:].new_zeros(2)
+    n_total = len(sigmas) - 1
+    n_refine = max(1, round(n_total * denoise))
+    return sigmas[-(n_refine + 1):]
+
+
+def _do_sample(
+        *,
+        guider,
+        sampler,
+        sigmas,
+        model,
+        noise: torch.Tensor,
+        steps: int,
+        cfg: float,
+        sampler_name: str,
+        scheduler: str,
+        positive,
+        negative,
+        source_latent: torch.Tensor,
+        denoise: float,
+        callback,
+        disable_pbar: bool,
+        seed: int,
+        noise_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Single sample dispatch for every Angelo sample call. If a custom
+    guider + sampler + sigmas trio is wired through Overrides, take the
+    custom path (via _guider_sample); otherwise fall through to the
+    standard comfy.sample.sample(...) path that's existed since v1.0.
+
+    All-or-nothing on the trio: partial wiring (e.g. sampler without
+    sigmas) silently falls through to the default path. Users see the
+    custom-sampler kwargs only by wiring the full bundle from a proper
+    GUIDER + SAMPLER + SIGMAS chain in their workflow."""
+    if guider is not None and sampler is not None and sigmas is not None:
+        g = _guider_with_conds(guider, positive, negative)
+        s = _truncate_sigmas_for_denoise(sigmas, denoise)
+        return _guider_sample(
+            g, noise, source_latent, sampler, s,
+            denoise_mask=noise_mask,
+            callback=callback,
+            disable_pbar=disable_pbar,
+            seed=seed,
+        )
+    return comfy.sample.sample(
+        model, noise, steps, cfg, sampler_name, scheduler,
+        positive, negative, source_latent,
+        denoise=denoise,
+        noise_mask=noise_mask,
+        callback=callback,
+        disable_pbar=disable_pbar,
+        seed=seed,
+    )
+
 
 # Max number of latents to keep in the undo stack per node. Each FLUX 2
 # latent at 832x1776 is ~180 KB (bf16); 10 = ~1.8 MB per node. Cheap.
@@ -412,6 +539,11 @@ def _refine_with_fine_upscaling(
     denoise: float,
     callback,
     disable_pbar: bool,
+    # #8 custom-sampler trio — None = use the default comfy.sample.sample
+    # path; all three set = dispatch via _do_sample to the guider path.
+    ov_guider=None,
+    ov_sampler=None,
+    ov_sigmas=None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """Pixel-space crop + upscale + VAE encode + refine + VAE decode +
     downscale + composite + VAE encode. The latent-space crop+upscale
@@ -465,9 +597,12 @@ def _refine_with_fine_upscaling(
         # whole image instead of the selected rect.
         print(f"[Angelo fine-upscale] scale=1.0 — using latent-space path (no VAE round-trip)")
         noise = comfy.sample.prepare_noise(current, seed, None)
-        new_latent = comfy.sample.sample(
-            model, noise, steps, cfg, sampler_name, scheduler,
-            positive, negative, current,
+        new_latent = _do_sample(
+            guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
+            model=model, noise=noise,
+            steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
+            positive=positive, negative=negative,
+            source_latent=current,
             denoise=denoise,
             noise_mask=mask,
             callback=callback,
@@ -596,9 +731,12 @@ def _refine_with_fine_upscaling(
 
     # ----- Refine via noise-injection inpaint on the upscaled latent -----
     noise = comfy.sample.prepare_noise(latent_up, seed, None)
-    refined_latent_up = comfy.sample.sample(
-        model, noise, steps, cfg, sampler_name, scheduler,
-        positive, negative, latent_up,
+    refined_latent_up = _do_sample(
+        guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
+        model=model, noise=noise,
+        steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
+        positive=positive, negative=negative,
+        source_latent=latent_up,
         denoise=denoise,
         noise_mask=sample_mask,
         callback=callback,
@@ -1169,9 +1307,13 @@ class AngeloRefine:
         # wired in, its non-None entries beat the toolbar widget values.
         # Kept here at the top so every downstream code path sees the
         # effective value without each one having to know about the override.
-        # Carries sampler-config (#25) plus display flags like
-        # disable_live_preview (#21).
+        # Carries sampler-config (#25), display flags (#21
+        # disable_live_preview), and the custom-sampler trio (#8
+        # guider/sampler/sigmas — all-or-nothing, applied inside _do_sample).
         disable_live_preview = False
+        ov_guider = None
+        ov_sampler = None
+        ov_sigmas = None
         if isinstance(overrides, dict):
             if overrides.get("steps") is not None:
                 steps = overrides["steps"]
@@ -1182,6 +1324,9 @@ class AngeloRefine:
             if overrides.get("scheduler") is not None:
                 scheduler = overrides["scheduler"]
             disable_live_preview = bool(overrides.get("disable_live_preview"))
+            ov_guider = overrides.get("guider")
+            ov_sampler = overrides.get("sampler")
+            ov_sigmas = overrides.get("sigmas")
 
         node_id = str(unique_id)
         state = _STATE.get(node_id)
@@ -1294,9 +1439,15 @@ class AngeloRefine:
             callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
             disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
             noise = comfy.sample.prepare_noise(incoming, sampler_seed, None)
-            new_latent = comfy.sample.sample(
-                model, noise, steps, cfg, sampler_name, scheduler,
-                positive, negative, incoming,
+            # #8: _do_sample dispatches to the custom guider path when
+            # ov_guider/ov_sampler/ov_sigmas are all wired, otherwise
+            # falls back to the standard comfy.sample.sample(...) call.
+            new_latent = _do_sample(
+                guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
+                model=model, noise=noise,
+                steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
+                positive=positive, negative=negative,
+                source_latent=incoming,
                 denoise=sampler_denoise,
                 callback=callback,
                 disable_pbar=disable_pbar,
@@ -1654,12 +1805,20 @@ class AngeloRefine:
                     sampler_name=sampler_name, scheduler=scheduler,
                     positive=refine_positive, negative=refine_negative,
                     denoise=denoise, callback=callback, disable_pbar=disable_pbar,
+                    # #8: pass the custom-sampler trio through so the
+                    # internal sample call inside Fine Upscale uses the
+                    # same dispatch logic.
+                    ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
                 )
             else:
                 noise = comfy.sample.prepare_noise(refine_source, this_seed, None)
-                refined = comfy.sample.sample(
-                    model, noise, steps, cfg, sampler_name, scheduler,
-                    refine_positive, refine_negative, refine_source,
+                # #8: dispatched via _do_sample, see Sampler Mode note.
+                refined = _do_sample(
+                    guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
+                    model=model, noise=noise,
+                    steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
+                    positive=refine_positive, negative=refine_negative,
+                    source_latent=refine_source,
                     denoise=denoise,
                     noise_mask=mask,
                     callback=callback,
@@ -1750,6 +1909,26 @@ class AngeloOverrides:
                                                                 "area but you still want previews "
                                                                 "on your other samplers."}),
             },
+            "optional": {
+                # Custom-sampler trio (#8). Wire ALL THREE from a proper
+                # SamplerCustomAdvanced-style chain (a GUIDER node like
+                # CFGGuider/BasicGuider + a KSamplerSelect SAMPLER + a
+                # BasicScheduler/Karras/etc. SIGMAS at denoise=1.0) to
+                # replace Angelo's toolbar sampler/scheduler entirely.
+                # When all three are wired, Angelo uses the guider path
+                # and the toolbar's steps/cfg/sampler_name/scheduler are
+                # ignored (sigmas encode the schedule; guider encodes
+                # cfg + the sampling math). Partial wiring (e.g. sampler
+                # without sigmas) silently falls through to the default.
+                # Angelo's per-call denoise still applies — the sigmas
+                # are tail-sliced to honour it (same as
+                # SplitSigmasDenoise). Conds (Refine vs Area Prompt vs
+                # Smart Inpaint reference_latents) are re-set on the
+                # guider per call so the wired guider is generic.
+                "guider": ("GUIDER",),
+                "sampler": ("SAMPLER",),
+                "sigmas": ("SIGMAS",),
+            },
         }
 
     RETURN_TYPES = ("ANGELO_OVERRIDES",)
@@ -1763,13 +1942,19 @@ class AngeloOverrides:
         "disable_live_preview flag for #21."
     )
 
-    def build(self, steps, cfg, sampler_name, scheduler, disable_live_preview):
+    def build(self, steps, cfg, sampler_name, scheduler, disable_live_preview,
+              guider=None, sampler=None, sigmas=None):
         bundle = {
             "steps": steps if isinstance(steps, int) and steps >= 1 else None,
             "cfg": float(cfg) if isinstance(cfg, (int, float)) and cfg >= 0 else None,
             "sampler_name": sampler_name if sampler_name != self._SENTINEL else None,
             "scheduler": scheduler if scheduler != self._SENTINEL else None,
             "disable_live_preview": bool(disable_live_preview),
+            # Custom-sampler trio (#8) — None if not wired, all-or-nothing
+            # at use time inside _do_sample.
+            "guider": guider,
+            "sampler": sampler,
+            "sigmas": sigmas,
         }
         return (bundle,)
 
