@@ -35,6 +35,12 @@ _STATE = {
 # needed — the official facebook/sam3 repo is gated).
 _SAM3_HF_REPO = "1038lab/sam3"
 _SAM3_CKPT_NAME = "sam3.pt"
+# SHA256 of the current 1038lab/sam3 sam3.pt. Verified against the file
+# the public mirror serves today (and as a checksum, also a guard against
+# pickle tampering at rest, since SAM 3 loads via torch.load). Update if
+# the upstream repo republishes — bump it, do not silently delete this
+# check. Thanks to @FNGarvin (#19) for both the suggestion and value.
+_SAM3_EXPECTED_SHA256 = "9999e2341ceef5e136daa386eecb55cb414446a00ac2b55eb2dfd2f7c3cf8c9e"
 
 
 def _torch_devices():
@@ -50,7 +56,11 @@ def _checkpoint_path():
 
 def _download_checkpoint(target_path):
     """Fetch sam3.pt into <models>/sam3/ from the public HF mirror, using
-    the proven download+move pattern from the installed SAM 3 node packs."""
+    the proven download+move pattern from the installed SAM 3 node packs.
+    The downloaded blob is SHA256-verified before being moved into place;
+    a mismatch deletes the bad copy and raises so the next attempt retries
+    cleanly."""
+    import hashlib
     import shutil
     from huggingface_hub import hf_hub_download
 
@@ -64,6 +74,25 @@ def _download_checkpoint(target_path):
         local_dir=target_dir,
         local_dir_use_symlinks=False,
     )
+
+    h = hashlib.sha256()
+    with open(downloaded, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    actual = h.hexdigest()
+    if actual != _SAM3_EXPECTED_SHA256:
+        try:
+            os.remove(downloaded)
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"[Angelo/SAM3] Downloaded sam3.pt failed SHA256 check.\n"
+            f"  expected: {_SAM3_EXPECTED_SHA256}\n"
+            f"  actual:   {actual}\n"
+            "Refusing to load a tampered or unexpected checkpoint. The "
+            "bad copy has been deleted; re-run to retry the download."
+        )
+
     if os.path.normpath(downloaded) != os.path.normpath(target_path):
         shutil.move(downloaded, target_path)
     print(f"[Angelo/SAM3] Downloaded to {target_path}")
