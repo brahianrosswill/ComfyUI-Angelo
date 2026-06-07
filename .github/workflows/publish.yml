@@ -1,0 +1,35 @@
+name: Publish to Comfy Registry
+
+# Publishes ComfyUI-Angelo to https://registry.comfy.org/ on every push
+# to main that touches pyproject.toml (the version-bump signal — same
+# pattern Comfy Registry's docs use). Also runs on manual dispatch.
+#
+# Setup before this can succeed:
+#   1. Create a publisher account at https://registry.comfy.org/
+#   2. Generate a Registry API key from the publisher dashboard
+#   3. Add it to this repo as a secret named REGISTRY_ACCESS_TOKEN
+#      (Settings → Secrets and variables → Actions → New repository secret)
+#
+# Tags are NOT the trigger because the docs strongly recommend keying off
+# pyproject.toml diffs — that way a manual git tag or a GitHub release
+# created from an old commit can't double-publish.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "pyproject.toml"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    name: Publish custom node
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+      - name: Publish to Comfy Registry
+        uses: Comfy-Org/publish-node-action@v1
+        with:
+          personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
