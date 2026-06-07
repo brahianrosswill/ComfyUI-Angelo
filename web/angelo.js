@@ -2283,8 +2283,8 @@ function triggerLoadImage(node) {
 
 // ---- Right-click image actions (#7) -------------------------------------
 // Copy / Open, like ComfyUI's image nodes. Loading an image is via drag-drop
-// onto the node or the Load Image button; clipboard paste was removed — it was
-// unreliable across browsers and clipboard-permission prompts.
+// onto the node, the Load Image button, or Ctrl+V / Cmd+V while hovering
+// the preview (the window-level paste handler near the top of this file).
 
 function _angeloOpenImageInTab(node) {
     let url = null;
