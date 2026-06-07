@@ -1079,6 +1079,21 @@ class AngeloRefine:
                 # input is needed. Sampler Mode still needs one (it defines
                 # the output dimensions for a fresh generation).
                 "latent": ("LATENT",),
+
+                # Optional sampler-quintet overrides for users who want a
+                # single source of truth for these values across the
+                # workflow (issue #25). Pipe-pattern: a single ANGELO_OVERRIDES
+                # slot, fed by the companion `Angelo — Overrides` node which
+                # bundles steps / cfg / sampler / scheduler into one dict.
+                # If unwired, the toolbar widget values flow through as
+                # before. Picked over per-param forceInput slots because
+                # forceInput on optional inputs proved unreliable across
+                # ComfyUI versions for delivering wired primitive values.
+                "overrides": ("ANGELO_OVERRIDES", {"tooltip": "Optional. Wire from an "
+                                                              "'Angelo — Overrides' node to "
+                                                              "drive steps / cfg / sampler / "
+                                                              "scheduler from your workflow "
+                                                              "instead of the toolbar."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -1147,8 +1162,23 @@ class AngeloRefine:
         redo_seq=0,
         latent=None,
         clip=None,
+        overrides=None,
         unique_id=None,
     ):
+        # Optional upstream overrides (#25): if an ANGELO_OVERRIDES bundle
+        # is wired in, its non-None entries beat the toolbar widget values.
+        # Kept here at the top so every downstream code path sees the
+        # effective value without each one having to know about the override.
+        if isinstance(overrides, dict):
+            if overrides.get("steps") is not None:
+                steps = overrides["steps"]
+            if overrides.get("cfg") is not None:
+                cfg = overrides["cfg"]
+            if overrides.get("sampler_name") is not None:
+                sampler_name = overrides["sampler_name"]
+            if overrides.get("scheduler") is not None:
+                scheduler = overrides["scheduler"]
+
         node_id = str(unique_id)
         state = _STATE.get(node_id)
 
@@ -1672,10 +1702,61 @@ class AngeloRefine:
         return {"ui": ui_msg, "result": (image, out_latent, source_image)}
 
 
+class AngeloOverrides:
+    """Companion node for #25: bundle steps / cfg / sampler / scheduler
+    into a single ANGELO_OVERRIDES dict, wire it into Angelo's `overrides`
+    slot, and the toolbar values are replaced by these for that run. Any
+    field left at its sentinel ("(toolbar)" for the combo dropdowns, -1
+    for INT / FLOAT) means "don't override this one — use Angelo's
+    toolbar value as normal", so a partial override (e.g. only steps) is
+    a first-class workflow."""
+
+    _SENTINEL = "(toolbar)"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "steps": ("INT", {"default": -1, "min": -1, "max": 100, "step": 1,
+                                  "tooltip": "-1 = use Angelo's toolbar value."}),
+                "cfg": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 30.0, "step": 0.1,
+                                  "tooltip": "-1 = use Angelo's toolbar value."}),
+                "sampler_name": ([cls._SENTINEL] + list(comfy.samplers.KSampler.SAMPLERS),
+                                 {"default": cls._SENTINEL,
+                                  "tooltip": "(toolbar) = use Angelo's toolbar value."}),
+                "scheduler": ([cls._SENTINEL] + list(comfy.samplers.KSampler.SCHEDULERS),
+                              {"default": cls._SENTINEL,
+                               "tooltip": "(toolbar) = use Angelo's toolbar value."}),
+            },
+        }
+
+    RETURN_TYPES = ("ANGELO_OVERRIDES",)
+    RETURN_NAMES = ("overrides",)
+    FUNCTION = "build"
+    CATEGORY = "sampling/Angelo"
+    DESCRIPTION = (
+        "Bundle steps / cfg / sampler / scheduler into one wire that "
+        "drives Angelo's sampler config from your workflow instead of "
+        "its toolbar. Any field left at the sentinel default falls "
+        "through to Angelo's toolbar value (per-field opt-in)."
+    )
+
+    def build(self, steps, cfg, sampler_name, scheduler):
+        bundle = {
+            "steps": steps if isinstance(steps, int) and steps >= 1 else None,
+            "cfg": float(cfg) if isinstance(cfg, (int, float)) and cfg >= 0 else None,
+            "sampler_name": sampler_name if sampler_name != self._SENTINEL else None,
+            "scheduler": scheduler if scheduler != self._SENTINEL else None,
+        }
+        return (bundle,)
+
+
 NODE_CLASS_MAPPINGS = {
     "AngeloRefine": AngeloRefine,
+    "AngeloOverrides": AngeloOverrides,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "AngeloRefine": "Angelo — click to refine",
+    "AngeloOverrides": "Angelo — Overrides",
 }
