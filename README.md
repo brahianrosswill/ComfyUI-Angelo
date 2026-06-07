@@ -177,6 +177,8 @@ The **Mode** switch sits centred up top. Below it, the generation block (always 
 | **Steps / CFG / Sampler ▾ / Sched ▾** | Sampler config, shared by base gen and refines. Klein 9B distilled: 4 / 1.0 / euler / simple. Qwen-Image-Edit: more steps + CFG > 1 (or a low-step Lightning LoRA) |
 | **Smpl Seed / Smpl Ctrl ▾ / Smpl Denoise** | Seed, after-generate control, and denoise for the base generation (Sampler Mode) |
 
+**Driving Steps / CFG / Sampler / Scheduler from elsewhere in the workflow.** If you'd rather have a single source of truth for those four values across your workflow than set them again on Angelo's toolbar, drop an **Angelo — Overrides** node (same `sampling/Angelo` category), set the fields you want to drive (leave others at `-1` / `(toolbar)` to fall through), and wire its `overrides` output into Angelo's `overrides` input slot. Per-field opt-in: override only `steps`, only `cfg`, any combination. Anything left at its sentinel uses the toolbar value as normal.
+
 ### Edit block — actions + toggles
 
 | Control | What it does |
