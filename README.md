@@ -364,6 +364,7 @@ Your **Area Prompt** applies to whatever candidate you click (toggle it on in Re
 
 **Detect-mode controls** — a floating panel pins to the top-right (beside the Mode switch) while candidates are up:
 - **✕ Cancel Detect**, **Esc**, or **Space** leaves detect mode. Empty-space clicks do *nothing*, so you can't accidentally drop out mid-batch.
+- **⚡ Fix All** — auto-edit every remaining candidate in sequence (see above). Becomes **■ Stop (n/total)** while running.
 - A **highlight-opacity slider** — drag it down to fade the overlays and inspect the edges of what you just generated; candidates stay clickable, and it resets to full when you exit.
 - **Conf** (in the Detect row) tunes the match threshold (≈0.2–0.3 finds more / fainter matches).
 
@@ -443,7 +444,9 @@ The hover ring on the canvas updates live as you press `[` / `]`, so you can siz
 - **Lock-on-fixed seed semantics.** Switching to `fixed` always also restores the seed widget to the value Python actually used at the last run — so "fixed" always means "the seed that produced the current canvas".
 - **`Reset` discards undo history too.** Hit Undo first if you just want to roll back one refine.
 - **Hold `\` before you commit.** A quick before/after flash tells you whether the last few refines actually improved things — and whether the Restore brush should claw any of it back.
-- **Prompt Slots + Detect is a production line.** Preset your region prompts in slots 1–6, detect "person", then work through the candidates switching slots as you go — no retyping between regions.
+- **Prompt Slots + Detect is a production line.** Preset your region prompts in slots 1–6, detect "person", then work through the candidates switching slots as you go — no retyping between regions. When every candidate gets the *same* prompt, skip the manual pass entirely and hit **⚡ Fix All**.
+- **Fix All for the broad pass, Vary ×4 for the holdout.** Auto-fix every face in the shot, then Vary the one stubborn candidate that didn't land — four fresh takes, click the best.
+- **Vary ×4 beats mashing Re-roll** whenever judging takes longer than generating: on a 4-step model the four candidates cost a few seconds total, and comparing them side-by-side is faster than flipping through sequential re-rolls from memory.
 
 ## Honest limits
 
