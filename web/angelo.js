@@ -538,13 +538,27 @@ function attachPreviewCanvas(node) {
     resetBtn.title = "Throw away the cached refined latent + history and start fresh from the upstream latent.";
     row1.appendChild(resetBtn);
 
-    const undoBtn = makeActionButton("Undo", () => triggerUndo(node), "undo");
-    undoBtn.title = "Pop the most recent refine off the history stack. Restores the cached latent from before the last click.";
-    row1.appendChild(undoBtn);
-
-    const redoBtn = makeActionButton("Redo", () => triggerRedo(node), "redo");
-    redoBtn.title = "Re-apply the most recent edit that Undo removed. A new edit clears the redo history.";
-    row1.appendChild(redoBtn);
+    // Undo / Redo as a joined two-icon pair — they're conceptually one
+    // control, and the glyphs (with full-word tooltips) reclaim row
+    // width for Re-roll / Vary ×4.
+    const undoRedoWrap = document.createElement("div");
+    undoRedoWrap.style.cssText = "display:inline-flex; flex:0 0 auto;";
+    const undoBtn = makeActionButton("⟲", () => triggerUndo(node), "undo");
+    undoBtn.title = "Undo — pop the most recent refine off the history stack (up to 10 deep). Restores the cached latent from before the last edit.";
+    undoBtn.style.borderRadius = "3px 0 0 3px";
+    undoBtn.style.padding = "3px 9px";
+    undoBtn.style.fontSize = "13px";
+    undoBtn.style.lineHeight = "1";
+    const redoBtn = makeActionButton("⟳", () => triggerRedo(node), "redo");
+    redoBtn.title = "Redo — re-apply the most recent edit that Undo removed. A new edit clears the redo history.";
+    redoBtn.style.borderRadius = "0 3px 3px 0";
+    redoBtn.style.borderLeft = "none";
+    redoBtn.style.padding = "3px 9px";
+    redoBtn.style.fontSize = "13px";
+    redoBtn.style.lineHeight = "1";
+    undoRedoWrap.appendChild(undoBtn);
+    undoRedoWrap.appendChild(redoBtn);
+    row1.appendChild(undoRedoWrap);
 
     const rerollBtn = makeActionButton("Re-roll", () => triggerReroll(node), "reroll");
     rerollBtn.title = "Try the most recent edit again with a fresh seed — SAME mask, SAME starting image. Each press replaces the last attempt with a new variation (it doesn't stack on top). Make an edit first, then Re-roll to cycle seeds without re-painting or resetting. Works for clicks, brush strokes, rectangles and detected masks.";
@@ -709,7 +723,13 @@ function attachPreviewCanvas(node) {
     row2.appendChild(seedCtrlSelect);
     node._AngeloSeedCtrlSelect = seedCtrlSelect;
 
-    row2.appendChild(makeSeparator());
+    // Xtra-Fine value group (separator + MP/Max/Ctx Pad/Method). Only
+    // shown while Xtra-Fine is effectively ON — the values mean nothing
+    // otherwise, and hiding them halves row 2 for the common case. The
+    // show/hide lives in syncFineUpscaleToggle.
+    const fineSep = makeSeparator();
+    row2.appendChild(fineSep);
+    node._AngeloFineSep = fineSep;
 
     const mpInput = makeNumberInput("MP", { min: 0.1, max: 4.0, step: 0.1, width: 50 }, (val) => {
         const w = findWidget(node, "min_megapixels");
@@ -833,11 +853,15 @@ function attachPreviewCanvas(node) {
     // at a time, so a tight SAM silhouette can be loosened (or a loose one
     // tightened) before committing. Pure-frontend: offsets the polygons /
     // bbox the JS already holds; the backend rasterises whatever it gets.
-    detectRow.appendChild(makeSeparator());
+    // Lives in the FLOATING DETECT PANEL (appended there below), not this
+    // always-visible row — it only means anything while candidates are up,
+    // and the detect row is nowrap-tight on narrow nodes.
+    const maskRow = document.createElement("div");
+    maskRow.style.cssText = "display:flex; align-items:center; justify-content:center; gap:4px;";
     const maskLabel = document.createElement("span");
     maskLabel.textContent = "Mask:";
     maskLabel.style.cssText = "font-size:11px; color:#bbb; padding:0 1px; white-space:nowrap;";
-    detectRow.appendChild(maskLabel);
+    maskRow.appendChild(maskLabel);
 
     const mkGrowBtn = (txt, delta, tip) => {
         const b = document.createElement("button");
@@ -851,13 +875,13 @@ function attachPreviewCanvas(node) {
         b.addEventListener("pointerdown", (e) => e.stopPropagation());
         return b;
     };
-    detectRow.appendChild(mkGrowBtn("−", -2, "Shrink all detected masks by 2px"));
+    maskRow.appendChild(mkGrowBtn("−", -2, "Shrink all detected masks by 2px"));
     const growReadout = document.createElement("span");
     growReadout.textContent = "0px";
     growReadout.style.cssText = "font-size:11px; color:#9cf; min-width:34px; text-align:center; white-space:nowrap;";
-    detectRow.appendChild(growReadout);
+    maskRow.appendChild(growReadout);
     node._AngeloMaskGrowReadout = growReadout;
-    detectRow.appendChild(mkGrowBtn("+", 2, "Grow all detected masks by 2px"));
+    maskRow.appendChild(mkGrowBtn("+", 2, "Grow all detected masks by 2px"));
 
     // ===== MODE ROW: the master Sampler/Edit switch, centred up top =====
     const modeWidget = findWidget(node, "mode");
@@ -955,6 +979,7 @@ function attachPreviewCanvas(node) {
     detectPanel.appendChild(cancelDetectBtn);
     detectPanel.appendChild(fixAllBtn);
     detectPanel.appendChild(opRow);
+    detectPanel.appendChild(maskRow);
     detectPanel.appendChild(brushHint);
     modeRow.appendChild(detectPanel);
     node._AngeloCancelDetectBtn = cancelDetectBtn;
@@ -1014,22 +1039,23 @@ function attachPreviewCanvas(node) {
     node._AngeloSchedulerSelect = schedulerSelect;
 
     // Load Image — bring an external photo in as the base to edit. Always
-    // active (both modes); no Empty Latent needed.
-    row3.appendChild(makeSeparator());
+    // active (both modes), which is exactly the Mode row's semantics — so
+    // it lives there, to the left of the Mode dropdown, keeping row 3 as
+    // pure sampler config and using the Mode row's otherwise-empty space.
     const loadImgBtn = makeActionButton("🖼 Load Image", () => triggerLoadImage(node), "neutral");
     loadImgBtn.title = "Load an external image as the base to edit / refine. "
         + "You'll be asked to keep its resolution or resize to a target "
         + "megapixel (both rounded to a /16 multiple). The image becomes the "
         + "base — Reset and Undo return to it. While loaded, the latent input "
         + "is ignored (hit Unload to go back to it). No Empty Latent needed.";
-    row3.appendChild(loadImgBtn);
+    modeRow.insertBefore(loadImgBtn, modeSelect);
     node._AngeloLoadImageBtn = loadImgBtn;
 
     const unloadImgBtn = makeActionButton("✕ Unload", () => unloadImage(node), "neutral");
     unloadImgBtn.title = "Clear the loaded image and return to the wired latent input "
         + "as the base. Shown only while an image is loaded.";
     unloadImgBtn.style.display = "none";
-    row3.appendChild(unloadImgBtn);
+    modeRow.insertBefore(unloadImgBtn, modeSelect);
     node._AngeloUnloadImageBtn = unloadImgBtn;
 
     // ===== ROW 4: Sampler-Mode seed group (greyed in Edit Mode) =====
@@ -3612,7 +3638,11 @@ function makeToolbarRow() {
 function makeToggleButton(label, onToggle) {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.textContent = label + ": OFF";
+    // State is shown by colour alone (lit fill = ON, flat grey = OFF) —
+    // no ": ON/OFF" text suffix. The suffix nearly doubled each button's
+    // width and the row holds five toggles; creative tools light buttons
+    // up rather than labelling them.
+    btn.textContent = label;
     btn.dataset.state = "off";
     btn.style.cursor = "pointer";
     btn.style.padding = "3px 10px";
@@ -3639,7 +3669,6 @@ function makeToggleButton(label, onToggle) {
 function _syncToggle(btn, widgetValue, onColor) {
     if (!btn) return;
     const on = !!widgetValue;
-    btn.textContent = btn._AngeloLabel + (on ? ": ON" : ": OFF");
     btn.dataset.state = on ? "on" : "off";
     btn.style.background = on ? onColor.bg : "#2a2a2a";
     btn.style.color = on ? "#fff" : "#bbb";
@@ -3696,6 +3725,23 @@ function syncFineUpscaleToggle(node) {
     else if (isSmartGuidedInpaintMode(node)) effective = false;
     else effective = findWidget(node, "fine_upscaling")?.value;
     _syncToggle(node._AngeloFineUpscaleToggle, effective, _TOGGLE_ON_COLORS.green);
+
+    // The Xtra-Fine value group (MP / Max / Ctx Pad / Method + their
+    // separator) only applies while Xtra-Fine is effectively ON — show
+    // it with the toggle, hide it otherwise. Explicit display values
+    // because hiding clears the inline display these wraps were built
+    // with (inline-flex for the inputs, default block for the separator).
+    const showFine = !!effective;
+    const fineGroup = [
+        [node._AngeloFineSep, ""],
+        [node._AngeloMpInput, "inline-flex"],
+        [node._AngeloMaxInput, "inline-flex"],
+        [node._AngeloCtxPadInput, "inline-flex"],
+        [node._AngeloMethodSelect, "inline-flex"],
+    ];
+    for (const [el, shown] of fineGroup) {
+        if (el) el.style.display = showFine ? shown : "none";
+    }
 }
 
 // Smart Inpaint mode hard-locks several params on the backend
