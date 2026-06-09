@@ -46,6 +46,8 @@ Angelo collapses that into:
 - **Smart Inpaint** — drag a rectangle and add brand-new content with an edit model (FLUX 2 Klein 9B or Qwen-Image-Edit).
 - **Smart Guided Inpaint** — no drawing at all: pick a location from a dropdown ("top left", "center", …) + describe what to add, and the edit model places it.
 - **Detect** a region by *describing* it (optional SAM 3) — type "the face", click the highlight, and it masks the silhouette for you. No painting. Nudge the mask in/out, or Shift/Alt-drag to touch it up by hand.
+- **⚡ Fix All** — detect "face" in a group shot, hit one button, and Angelo works through *every* face automatically — each at Xtra-Fine quality with your Area Prompt, each individually undoable. ADetailer's pitch, but visible, stoppable, and prompt-controlled.
+- **Vary ×4** — re-roll with four dice: generate four variations of your last edit at once and click your favourite from a 2×2 chooser. Nothing commits until you pick.
 - **Re-roll** the last edit with a fresh seed on the same mask + original image, or **toggle Persistent Mask** to keep evolving a region over repeated Queues.
 - **Restore brush** — toggle Restore and paint to heal a region back to the *original* image, instantly (no sampling). The Lightroom "erase part of an edit" gesture: refine a spacesuit, then brush the face inside the helmet back to how it was.
 - **Hold `\`** over the preview for an instant before/after flash of the original base (Lightroom's compare key).
@@ -194,6 +196,7 @@ The Overrides node also carries **`disable_live_preview`** — flip this ON if C
 | **Undo** | Pop the most recent refine off the history stack (up to 10 deep) |
 | **Redo** | Re-apply the most recent refine that Undo removed. A new edit clears the redo history. Button-only (no Ctrl-Z/Y — those clash with ComfyUI's graph undo) |
 | **Re-roll** | Redo the most recent edit with a fresh seed on the **same mask + same starting image**, replacing the last attempt — cycle seeds on one edit without reset → re-mask → rerun. Works for click / paint / rectangle / detected masks |
+| **Vary ×4** | Re-roll's big sibling: generate **four** variations of the most recent edit at once (same mask, same starting image, four seeds), then click your favourite in a 2×2 chooser overlay. The pick replaces the last attempt; ✕ / Esc keeps the current result — nothing commits until you choose |
 | **Persistent Mask** | Hold the last mask, then hit Queue repeatedly to keep refining that region on the **latest** result — each press builds further, so you can gradually morph it (pair with `Ctrl=randomize`). For variations on the *original* image instead, use **Re-roll**. Locked OFF in Smart Guided Inpaint (no mask) |
 | **Area Prompt** | Refine with the Area Prompt text typed in the box above the canvas (encoded with the connected `CLIP`) instead of the main prompt. Requires a `CLIP` input + non-empty text. The box only appears when this is ON. Forced ON in both Smart modes |
 | **Paint Mode** | Hold + drag to paint a freeform stroke as the mask, instead of single-circle clicks (Refine only) |
@@ -257,7 +260,9 @@ Two complementary ways to keep working a region without re-masking:
 
 A new click while Persistent Mask is on commits a new region to keep building from.
 
-In short: **Re-roll** = "try this edit again on the original"; **Persistent Mask** = "keep evolving from where I am now."
+**Vary ×4** (button, next to Re-roll) is Re-roll with four dice: it generates **four** variations of your most recent edit in one go — same mask, same starting image, four different seeds — and overlays a 2×2 chooser on the preview. Click the one you like and it replaces the last attempt; hit ✕ or Esc and the current result stays, at zero cost (nothing was committed). On a 4-step distilled model like Klein the four passes take just a few seconds total. Conditioning is encoded once and shared across the passes, so it's cheaper than four separate re-rolls.
+
+In short: **Re-roll** = "try this edit again on the original"; **Vary ×4** = "show me four tries, I'll pick"; **Persistent Mask** = "keep evolving from where I am now."
 
 ## Restore brush (heal back to the original)
 
@@ -347,6 +352,8 @@ Instead of painting or dragging a region, let **SAM 3** find it for you by *desc
 - Use the **Quick Detect…** dropdown of common subjects, grouped into People / Body / Clothing / Animals / Scene / Objects (face, hands, hair, clothing, sky, car, …). Picking one runs immediately and doesn't touch the text box.
 
 Angelo highlights every match on the preview and you enter **detect mode** — nothing changes until you click. **Click a highlight** to edit that object; the others stay up so you can **work through each one in turn** without re-detecting. Edited candidates turn **green** (so you can track progress), the hovered one is **yellow**.
+
+**⚡ Fix All** (in the floating detect panel) does the working-through *for you*: it edits every remaining (non-green) candidate in sequence, automatically — confirm, wait for the run to land, confirm the next — with your current settings applying to each one (Area Prompt, Xtra-Fine, seed control). The classic move: detect `face` in a group shot, set the Area Prompt to "detailed photorealistic face", hit Fix All, and watch every face get fixed at Xtra-Fine resolution while the candidates turn green one by one. The button becomes **■ Stop (n/total)** while running — click it (or Cancel Detect / Esc) to stop after the in-flight candidate. Each fix is a separate history entry, so a single bad one can be individually undone, re-rolled, or **Vary ×4**'d afterwards.
 
 Per mode, the confirmed detection becomes:
 - **Refine** → the exact **silhouette** mask (a latent-space inpaint — see below).
