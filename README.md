@@ -259,6 +259,25 @@ A new click while Persistent Mask is on commits a new region to keep building fr
 
 In short: **Re-roll** = "try this edit again on the original"; **Persistent Mask** = "keep evolving from where I am now."
 
+## Restore brush (heal back to the original)
+
+Sometimes an edit is 90% right and 10% collateral damage — you refined a spacesuit and the face inside the helmet changed too. Before, fixing that meant exporting to Photoshop and masking by hand. Now:
+
+1. Toggle **Restore** ON (the amber button next to Paint Mode).
+2. Click or paint over the part you want back.
+3. That region snaps back to the **session's original base image** — instantly.
+
+No sampling runs at all: Restore is a feathered blend in latent space (`mask × original + (1−mask) × current`), so it costs milliseconds, not a model pass. Everything outside the painted region stays bit-exact.
+
+Notes:
+
+- **Feather applies** — use it for a soft transition between restored and edited content, exactly like the refine masks.
+- Works with **single clicks, Paint Mode strokes, and Detect masks** — detect "the face", click the highlight, and the face is healed back in one go.
+- **"Original" means the session base**: the Sampler Mode generation, or the photo you loaded via Load Image. Reset and Undo use the same anchor.
+- It pushes a normal history entry, so **Undo / Redo step through restores** just like refines.
+- **Refine mode only.** The Smart modes generate new content, so "restore to base" has no meaning there — the toggle dims.
+- Pair it with **hold `\`** (see Keyboard shortcuts) to flash the original first and see exactly what you'd be bringing back.
+
 ## Inpainting Mode (Refine / Smart Inpaint / Smart Guided Inpaint)
 
 Three options for how a region is treated. The two Smart modes need an **edit-trained model** (FLUX 2 Klein 9B, **Qwen-Image-Edit**, etc.) and a wired `CLIP`. They work by injecting `reference_latents`, so a **base** text-to-image checkpoint (e.g. plain Qwen-Image, not the *Edit* variant) will produce colour-distorted output — it has the reference code path but its weights were never trained for it. Use the Edit variant for Smart Inpaint / Smart Guided Inpaint; **Refine** works on any model.
@@ -416,6 +435,8 @@ The hover ring on the canvas updates live as you press `[` / `]`, so you can siz
 - **The refine controls grey out in Sampler Mode** (and the base-gen seed row greys in Edit Mode) so you can see at a glance which mode you're in.
 - **Lock-on-fixed seed semantics.** Switching to `fixed` always also restores the seed widget to the value Python actually used at the last run — so "fixed" always means "the seed that produced the current canvas".
 - **`Reset` discards undo history too.** Hit Undo first if you just want to roll back one refine.
+- **Hold `\` before you commit.** A quick before/after flash tells you whether the last few refines actually improved things — and whether the Restore brush should claw any of it back.
+- **Prompt Slots + Detect is a production line.** Preset your region prompts in slots 1–6, detect "person", then work through the candidates switching slots as you go — no retyping between regions.
 
 ## Honest limits
 
