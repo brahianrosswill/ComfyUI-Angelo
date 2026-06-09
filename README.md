@@ -162,17 +162,15 @@ If you're using Angelo to **edit existing images**, keep it snappy by running it
 The toolbar holds everything — there are no native widget rows. Top to bottom, grouped into a centred Mode switch, a generation block, and an edit block:
 
 ```
-                 ┌─────────────────┐
-                 │  Mode: [Edit ▾] │            ← centred at the top
-                 └─────────────────┘
+      [🖼 Load Image]  Mode: [Edit ▾]             ← top row, centred (always active)
   [Steps] [CFG] [Sampler ▾] [Sched ▾]            ← shared generation config (always active)
   [Smpl Seed] [Smpl Ctrl ▾] [Smpl Denoise]       ← base-gen seed (greys in Edit Mode)
  ─────────────────────────────────────────
-  [Reset] [Undo] [Redo] [Re-roll] | [Persistent Mask] [Area Prompt] [Paint Mode] [Xtra-Fine] | [Inpaint ▾]
-  [Click R] [Feather] [Denoise] [Seed] [Ctrl ▾] | [MP] [Max] [Method ▾]    ← edit block (greys in Sampler Mode)
+  [Reset] [⟲⟳] [Re-roll] [Vary ×4] | [Persistent Mask] [Area Prompt] [Paint Mode] [Restore] [Xtra-Fine] | [Inpaint ▾]
+  [Click R] [Feather] [Denoise] [Seed] [Ctrl ▾] | [MP] [Max] [Ctx Pad] [Method ▾]  ← edit block (greys in Sampler Mode)
 ```
 
-The **Mode** switch sits centred up top. Below it, the generation block (always active, base-gen seed greys in Edit Mode); below the divider, the edit block (greys entirely in Sampler Mode). Every control has a hover tooltip. Quick reference:
+The **Mode** switch sits centred up top, with **🖼 Load Image** beside it (both work in either mode). Below them, the generation block (always active, base-gen seed greys in Edit Mode); below the divider, the edit block (greys entirely in Sampler Mode). Toggle buttons show their state by **lighting up** when ON — no ON/OFF text. The Xtra-Fine values (`MP / Max / Ctx Pad / Method`) appear only while Xtra-Fine is ON. Every control has a hover tooltip. Quick reference:
 
 ### Mode + generation block
 
@@ -193,8 +191,7 @@ The Overrides node also carries **`disable_live_preview`** — flip this ON if C
 | Control | What it does |
 |---|---|
 | **Reset** | Discard cached refinements + history, start fresh from the Sampler-Mode base |
-| **Undo** | Pop the most recent refine off the history stack (up to 10 deep) |
-| **Redo** | Re-apply the most recent refine that Undo removed. A new edit clears the redo history. Button-only (no Ctrl-Z/Y — those clash with ComfyUI's graph undo) |
+| **⟲ / ⟳** (Undo / Redo) | Pop the most recent refine off the history stack (up to 10 deep) / re-apply the one Undo removed. A new edit clears the redo history. Button-only (no Ctrl-Z/Y — those clash with ComfyUI's graph undo) |
 | **Re-roll** | Redo the most recent edit with a fresh seed on the **same mask + same starting image**, replacing the last attempt — cycle seeds on one edit without reset → re-mask → rerun. Works for click / paint / rectangle / detected masks |
 | **Vary ×4** | Re-roll's big sibling: generate **four** variations of the most recent edit at once (same mask, same starting image, four seeds), then click your favourite in a 2×2 chooser overlay. The pick replaces the last attempt; ✕ / Esc keeps the current result — nothing commits until you choose |
 | **Persistent Mask** | Hold the last mask, then hit Queue repeatedly to keep refining that region on the **latest** result — each press builds further, so you can gradually morph it (pair with `Ctrl=randomize`). For variations on the *original* image instead, use **Re-roll**. Locked OFF in Smart Guided Inpaint (no mask) |
@@ -366,10 +363,11 @@ Your **Area Prompt** applies to whatever candidate you click (toggle it on in Re
 - **✕ Cancel Detect**, **Esc**, or **Space** leaves detect mode. Empty-space clicks do *nothing*, so you can't accidentally drop out mid-batch.
 - **⚡ Fix All** — auto-edit every remaining candidate in sequence (see above). Becomes **■ Stop (n/total)** while running.
 - A **highlight-opacity slider** — drag it down to fade the overlays and inspect the edges of what you just generated; candidates stay clickable, and it resets to full when you exit.
+- **Mask `[−] / [+]`** — grow / shrink every detected mask together (see "Tidying up a detection" below).
 - **Conf** (in the Detect row) tunes the match threshold (≈0.2–0.3 finds more / fainter matches).
 
 **Tidying up a detection.** SAM is usually close but not perfect — two tools fix it without re-detecting:
-- **Mask `[−] / [+]`** (after the Quick Detect dropdown) grows or shrinks **every** detected mask together, 2px at a time — handy when a silhouette is a touch tight or loose all over. The number shows the current offset; it resets on each new detect.
+- **Mask `[−] / [+]`** (in the floating detect panel) grows or shrinks **every** detected mask together, 2px at a time — handy when a silhouette is a touch tight or loose all over. The number shows the current offset; it resets on each new detect.
 - **Touch-up brush (Refine only).** Hold **Shift** and drag on the preview to **add** to the mask you start over (e.g. pull in a missed chunk of hair); hold **Alt** and drag to **subtract** — including punching a hole right in the middle. The brush size is your **Click R**, with a live green (add) / red (subtract) preview, and it works whether or not Paint Mode is on. Then click the candidate to apply the edited shape. (Brushing freezes that candidate's shape, so do any +/− grow first.)
 
 **While it works** a *"Loading SAM 3…"* overlay covers the preview — the **first** Detect of a session builds and caches the model (several seconds), so this is just busy feedback rather than a frozen-looking canvas. It clears itself the moment results come back; if a request ever hangs, a **✕** on the overlay closes it manually. Anything you need to read or act on — *no matches*, a bad query, or the *SAM 3 not installed* prompt — shows as a persistent in-app message bar you dismiss yourself, never a toast that flashes past.
