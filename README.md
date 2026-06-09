@@ -47,6 +47,9 @@ Angelo collapses that into:
 - **Smart Guided Inpaint** — no drawing at all: pick a location from a dropdown ("top left", "center", …) + describe what to add, and the edit model places it.
 - **Detect** a region by *describing* it (optional SAM 3) — type "the face", click the highlight, and it masks the silhouette for you. No painting. Nudge the mask in/out, or Shift/Alt-drag to touch it up by hand.
 - **Re-roll** the last edit with a fresh seed on the same mask + original image, or **toggle Persistent Mask** to keep evolving a region over repeated Queues.
+- **Restore brush** — toggle Restore and paint to heal a region back to the *original* image, instantly (no sampling). The Lightroom "erase part of an edit" gesture: refine a spacesuit, then brush the face inside the helmet back to how it was.
+- **Hold `\`** over the preview for an instant before/after flash of the original base (Lightroom's compare key).
+- **Six Prompt Slots** on the Area Prompt box — preset "mushrooms" / "bones" / "spacesuit" once, then just click a number and paint.
 - **Undo / Redo** to step back and forward through your refines.
 - **`source_image` output** emits the original pre-edit base, ready to wire straight into a compare node.
 
@@ -194,6 +197,7 @@ The Overrides node also carries **`disable_live_preview`** — flip this ON if C
 | **Persistent Mask** | Hold the last mask, then hit Queue repeatedly to keep refining that region on the **latest** result — each press builds further, so you can gradually morph it (pair with `Ctrl=randomize`). For variations on the *original* image instead, use **Re-roll**. Locked OFF in Smart Guided Inpaint (no mask) |
 | **Area Prompt** | Refine with the Area Prompt text typed in the box above the canvas (encoded with the connected `CLIP`) instead of the main prompt. Requires a `CLIP` input + non-empty text. The box only appears when this is ON. Forced ON in both Smart modes |
 | **Paint Mode** | Hold + drag to paint a freeform stroke as the mask, instead of single-circle clicks (Refine only) |
+| **Restore** | When ON, clicks / strokes / Detect masks **restore** the painted region back to the session's original base — a feathered latent blend, no sampling, instant. Bring back details an edit shouldn't have touched. Refine only |
 | **Xtra-Fine** | Crop the painted region, upscale via VAE + image upscale, refine at high effective resolution, composite back. ADetailer-style. Forced ON in Smart Inpaint, OFF in Smart Guided Inpaint |
 | **Inpaint ▾** | `Refine` / `Smart Inpaint` / `Smart Guided Inpaint`. See "Inpainting Mode" below |
 
@@ -363,6 +367,8 @@ Connect a `CLIP` (the same one feeding your main positive/negative). Toggle **Ar
 
 **While Area Prompt is on, the refine uses the Area text _exclusively_ and never falls back to the main prompt — even when the Area text is left empty (empty = an empty positive prompt).** This matters for the Smart edit modes: the main positive can carry a whole-image `reference_latents` (e.g. a Klein edit workflow's ReferenceLatent), and letting it leak in made an empty-Area-Prompt Smart Inpaint reproduce the entire scene into the region instead of editing just it.
 
+**Prompt Slots.** The numbered buttons **1–6** in the Area Prompt header are six independent presets, each holding its own positive + negative text. Click a number to switch — the current text is stashed into its slot first, so nothing is lost — and the slots are saved with the workflow. Preset a few region prompts up front ("detailed photorealistic face", "ornate armour", "lush foliage"), then just click a slot and paint. Slots holding text show brighter digits than empty ones.
+
 The box has a **Pos/Neg** toggle that switches which prompt you're editing. Negative is optional and falls back to the main negative when empty (matters only for CFG > 1; ignored at CFG=1 / distilled models like Klein — which is why it's tucked behind a toggle rather than a second always-visible box).
 
 Both Smart modes force Area Prompt ON (it's the whole point there), and add an **Insert Smart Phrasing** button for the *keep X the same* constraints. Smart Guided Inpaint also adds the **Location** dropdown directly above the box.
@@ -392,6 +398,12 @@ When the cursor is hovering the preview canvas AND you're in Edit Mode, these ke
 | `[` / `]` | Click R | 4 px | Universal brush-size (Photoshop, Krita, Procreate) |
 | `{` / `}` (shift+brackets) | Feather | 4 px | Photoshop brush hardness/softness |
 | `,` / `.` | Denoise | 0.05 | `<` / `>` ordering on the same keys |
+
+Plus one hold-key that works in **any** mode (not just Edit Mode):
+
+| Key | Does | Convention |
+|---|---|---|
+| `\` (hold) | Flash the session's **original base image** while held — release to return to the current state. A "BEFORE" badge confirms what you're looking at | Lightroom's before/after key |
 
 The hover ring on the canvas updates live as you press `[` / `]`, so you can size the brush against the actual image content. Shortcuts only fire while the cursor is on the canvas; move to the toolbar and they revert to ComfyUI's normal keybindings.
 
