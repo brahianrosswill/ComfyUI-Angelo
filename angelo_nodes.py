@@ -1222,6 +1222,30 @@ class AngeloRefine:
                 # older saved workflows don't shift their positional
                 # widgets_values; defaults to 0.
                 "redo_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
+
+                # Restore brush (#12): when ON, clicks / paint strokes / detect
+                # masks RESTORE the painted region back to the session's base
+                # image via a feathered latent blend — no sampling at all, so
+                # it's effectively instant. The Lightroom "erase part of an
+                # edit" gesture: refine a region, then brush back the bits of
+                # the original you wanted kept (the face inside the helmet).
+                # Honoured in Refine mode only; the Smart modes ignore it.
+                # Declared LAST so older saved workflows don't shift their
+                # positional widgets_values; defaults to False.
+                "restore_mode": ("BOOLEAN", {"default": False,
+                                             "tooltip": "When ON, clicks and paint strokes restore "
+                                                        "the painted region back to the session base "
+                                                        "image (a feathered latent blend — no "
+                                                        "sampling, instant). Refine mode only. "
+                                                        "Toggled via the Restore button on the "
+                                                        "toolbar."}),
+
+                # Prompt slots (#12): JSON persistence for the Area Prompt
+                # slot strip ({active, slots: [{pos, neg} × 6]}). Pure UI
+                # state — Python never reads it; the JS mirrors the active
+                # slot's text into area_text_positive/negative, which remain
+                # the encode source of truth. Declared LAST (see above).
+                "area_prompt_slots": ("STRING", {"default": "", "multiline": False}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -1314,6 +1338,8 @@ class AngeloRefine:
         reroll_seq=0,
         seg_mask_png="",
         redo_seq=0,
+        restore_mode=False,
+        area_prompt_slots="",
         latent=None,
         clip=None,
         overrides=None,
@@ -1507,7 +1533,12 @@ class AngeloRefine:
             image, image_refs = _decode_to_preview(vae, new_latent)
             ui_msg["Angelo_preview"] = image_refs
             # Freshly-generated base IS the source image — cache + emit it.
+            # The preview refs double as the source refs for the JS
+            # hold-to-compare key (the base and the preview are the same
+            # image until the first edit).
             _STATE[node_id]["source_pixels"] = image
+            _STATE[node_id]["source_preview_refs"] = image_refs
+            ui_msg["Angelo_source_preview"] = image_refs
             return {"ui": ui_msg, "result": (image, out_latent, image)}
 
         # ===== Edit Mode branch (existing behaviour) =====
@@ -1739,6 +1770,12 @@ class AngeloRefine:
                 mask = _gaussian_blur_2d(mask, max(0.5, sigma_latent))
                 mask = mask.clamp(0.0, 1.0)
 
+            # Restore brush (#12): Refine-only — the Smart modes regenerate
+            # content, so "restore to base" has no meaning there and the JS
+            # dims the toggle. Decided before the conditioning block so a
+            # restore never pays for a CLIP encode it won't use.
+            restore_now = bool(restore_mode) and inpainting_mode == "Refine"
+
             # Area-prompt conditioning selection. When area_prompt is on AND a
             # CLIP is connected, the refine uses the AREA text ONLY and NEVER
             # the main prompt — even when the Area text is empty, in which case
@@ -1761,7 +1798,7 @@ class AngeloRefine:
             if inpainting_mode == "Smart Guided Inpaint":
                 prefix = _GUIDED_LOCATION_PREFIXES.get(str(guided_location), "")
                 area_pos_text = prefix + area_pos_text
-            if area_prompt and clip is not None:
+            if area_prompt and clip is not None and not restore_now:
                 tokens_p = clip.tokenize(area_pos_text)
                 refine_positive = clip.encode_from_tokens_scheduled(tokens_p)
                 if str(area_text_negative).strip():
@@ -1815,7 +1852,31 @@ class AngeloRefine:
                     refine_positive, {"reference_latents": [reference_latent]}, append=True,
                 )
 
-            if fine_upscaling:
+            if restore_now:
+                # ===== Restore brush: heal back to the base, no sampling =====
+                # current = mask * base + (1-mask) * current, in latent space.
+                # Outside the (feathered) mask the current latent is kept
+                # bit-exact; inside it the session base is brought back. The
+                # result is pushed as a normal history entry so Undo / Redo /
+                # Re-roll keep working unchanged.
+                src = state.get("source_latent")
+                if src is None:
+                    h0 = state["history"][0]
+                    src = h0[0] if isinstance(h0, tuple) else h0
+                if tuple(src.shape) != tuple(current.shape):
+                    # Shouldn't happen (source_latent resets with every base
+                    # change), but never crash an edit session over it.
+                    print("[Angelo restore] base/current latent shape mismatch "
+                          f"({tuple(src.shape)} vs {tuple(current.shape)}) — restore skipped")
+                    refined = current
+                else:
+                    src = src.to(device=current.device, dtype=current.dtype)
+                    alpha = mask
+                    while alpha.dim() < current.dim():
+                        alpha = alpha.unsqueeze(0)   # [1,H,W] → [1,1,H,W] (→ [1,1,1,H,W] for 5D)
+                    refined = src * alpha + current * (1.0 - alpha)
+                refined_pixels = None
+            elif fine_upscaling:
                 refined, refined_pixels = _refine_with_fine_upscaling(
                     model=model, vae=vae, current=refine_source, current_pixels=current_pixels, mask=mask,
                     scale_x=scale_x, scale_y=scale_y,
@@ -1889,6 +1950,17 @@ class AngeloRefine:
                 src_latent = h0[0] if isinstance(h0, tuple) else h0
             source_image = _vae_decode(vae, src_latent)
             state["source_pixels"] = source_image
+
+        # Hold-to-compare: ship a viewable ref to the BASE image so the JS
+        # can flash it under the '\' key. Saved to temp once per session
+        # (per base) and the refs cached — repeat edits reuse them.
+        src_refs = state.get("source_preview_refs")
+        if src_refs is None:
+            previewer = comfy_nodes.PreviewImage()
+            ui_src = previewer.save_images(source_image, filename_prefix="Angelo_source")
+            src_refs = ui_src["ui"]["images"]
+            state["source_preview_refs"] = src_refs
+        ui_msg["Angelo_source_preview"] = src_refs
 
         return {"ui": ui_msg, "result": (image, out_latent, source_image)}
 

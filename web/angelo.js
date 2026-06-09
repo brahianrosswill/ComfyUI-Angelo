@@ -23,6 +23,11 @@ function dbg(...args) {
 //     the canvas mouseenter / mouseleave handlers in attachPreviewCanvas.
 let _AngeloHoveredNode = null;
 
+// --- The node currently held in before/after compare via the '\' key.
+//     Tracked at module level so the keyup / window-blur handlers can end
+//     the compare even if the cursor has left the canvas mid-hold.
+let _AngeloCompareNode = null;
+
 // --- Global queuePrompt hook: bumps click_seq on every AngeloRefine
 //     node where persistent_mask is on, so the standard ComfyUI Queue
 //     button re-runs the refine on the held mask with a fresh seed.
@@ -109,6 +114,21 @@ function installKeyboardShortcuts() {
             return;
         }
 
+        // '\' (hold) = before/after compare — flash the session's BASE image
+        // while held, release to return to the current state. Lightroom's
+        // before/after key. Works in any mode (it's read-only); sits before
+        // the Edit-Mode gate below. No modifiers so Shift+\ (|) stays free.
+        if (event.key === "\\" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+            if (node._AngeloSourceImg && node._AngeloImg && !node._AngeloCompareHold) {
+                node._AngeloCompareHold = true;
+                _AngeloCompareNode = node;
+                redrawCanvasWithOverlays(node);
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+        }
+
         // 'F' fits the image to the panel (zoom=1, centred). Works in any
         // mode — it mirrors the double-middle-click reset — so it sits before
         // the Edit-Mode gate below. No modifiers, so Ctrl-F etc. stay with the
@@ -163,6 +183,21 @@ function installKeyboardShortcuts() {
         event.preventDefault();
         event.stopPropagation();
     }, true);  // capture phase
+
+    // End the '\' before/after compare on key release — or on window blur,
+    // which swallows the keyup (alt-tab mid-hold would otherwise leave the
+    // BEFORE view stuck).
+    const endCompare = () => {
+        const n = _AngeloCompareNode;
+        if (!n) return;
+        n._AngeloCompareHold = false;
+        _AngeloCompareNode = null;
+        redrawCanvasWithOverlays(n);
+    };
+    document.addEventListener("keyup", (event) => {
+        if (event.key === "\\") endCompare();
+    }, true);
+    window.addEventListener("blur", endCompare);
 
     // Handle image paste (Ctrl+V / Cmd+V) from the OS clipboard.
     window.addEventListener("paste", (event) => {
@@ -334,6 +369,23 @@ app.registerExtension({
                 const url = makeViewUrl(ref);
                 dbg("loading preview", url);
                 loadIntoCanvas(this, url);
+            }
+
+            // Base image for the hold-to-compare key (\). Preloaded into an
+            // off-canvas Image so the flash is instant; only re-fetched when
+            // the base actually changes (Python reuses the cached refs).
+            const srcRefs = message?.Angelo_source_preview;
+            if (srcRefs && srcRefs.length > 0) {
+                const srcUrl = makeViewUrl(srcRefs[0]);
+                if (this._AngeloSourceUrl !== srcUrl) {
+                    this._AngeloSourceUrl = srcUrl;
+                    const node = this;
+                    const im = new Image();
+                    im.crossOrigin = "anonymous";
+                    im.onload = () => { node._AngeloSourceImg = im; };
+                    im.onerror = () => dbg("source preview load error", srcUrl);
+                    im.src = srcUrl;
+                }
             }
 
             // NOTE: seg_polygon is intentionally NOT cleared here. It must
@@ -508,6 +560,21 @@ function attachPreviewCanvas(node) {
     paintModeToggle.title = "When ON, hold + drag on the preview paints a freeform brush stroke (each dragged point becomes a circle of click_radius; the union is the refine mask). Release to submit. When OFF, clicks behave as single-circle refines.";
     row1.appendChild(paintModeToggle);
     node._AngeloPaintModeToggle = paintModeToggle;
+
+    const restoreToggle = makeToggleButton("Restore", () => {
+        const w = findWidget(node, "restore_mode");
+        if (!w) return;
+        setWidget(w, !w.value);
+        syncRestoreToggle(node);
+    });
+    restoreToggle.title = "Restore brush — when ON, clicks and paint strokes RESTORE the painted "
+        + "region back to the session's original base image instead of refining it. No sampling at "
+        + "all, so it's instant. Use it to bring back details an edit shouldn't have touched (e.g. "
+        + "refine a spacesuit, then brush the face inside the helmet back to the original). Feather "
+        + "applies for a soft blend; works with clicks, Paint Mode strokes, and Detect masks. "
+        + "Refine mode only — the Smart modes ignore it.";
+    row1.appendChild(restoreToggle);
+    node._AngeloRestoreToggle = restoreToggle;
 
     const fineUpscaleToggle = makeToggleButton("Xtra-Fine", () => {
         const w = findWidget(node, "fine_upscaling");
@@ -1692,6 +1759,38 @@ function attachAreaPromptBox(node, container) {
     label.style.userSelect = "none";
     header.appendChild(label);
 
+    // Prompt slots (#12): six numbered presets, each holding its own
+    // positive + negative Area Prompt. Click a number to switch — the
+    // current text is stashed into the outgoing slot first, so nothing
+    // is ever lost. Persisted (with the active index) in the hidden
+    // area_prompt_slots widget, so slots survive workflow save/load.
+    const slotStrip = document.createElement("div");
+    slotStrip.style.cssText = "display:flex; gap:3px; align-items:center;";
+    slotStrip.title = "Prompt slots — six independent Area Prompts saved with the workflow. "
+        + "Click a number to switch (the current text is kept in its slot). "
+        + "E.g. slot 1 = 'mushrooms', slot 2 = 'bones': paint, switch, paint.";
+    const slotBtns = [];
+    for (let i = 0; i < _ANGELO_NUM_SLOTS; i++) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = String(i + 1);
+        b.style.cssText = "width:21px; height:19px; padding:0; font-size:10px; font-weight:bold; "
+            + "border:1px solid #555; border-radius:3px; background:#2a2a2a; color:#888; "
+            + "cursor:pointer; line-height:1; user-select:none;";
+        for (const ev of ["pointerdown", "mousedown"]) {
+            b.addEventListener(ev, (e) => e.stopPropagation());
+        }
+        b.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            selectPromptSlot(node, i);
+        });
+        slotStrip.appendChild(b);
+        slotBtns.push(b);
+    }
+    header.appendChild(slotStrip);
+    node._AngeloPromptSlotBtns = slotBtns;
+
     const posNegBtn = document.createElement("button");
     posNegBtn.textContent = "Positive";
     posNegBtn.style.fontSize = "11px";
@@ -1732,6 +1831,9 @@ function attachAreaPromptBox(node, container) {
     textarea.addEventListener("input", () => {
         const w = findWidget(node, targetWidgetName());
         if (w) setWidget(w, textarea.value);
+        // Mirror into the active prompt slot so slots survive switches
+        // and workflow saves without a separate "save slot" action.
+        _angeloPersistActiveSlot(node);
     });
 
     posNegBtn.addEventListener("click", (event) => {
@@ -1839,6 +1941,90 @@ function appendSmartPhrases(node, phrases) {
         ? "area_text_negative" : "area_text_positive";
     const w = findWidget(node, wname);
     if (w) setWidget(w, next);
+    _angeloPersistActiveSlot(node);
+}
+
+// ===== Prompt slots (#12) — six numbered Area Prompt presets ============
+// State shape (JSON in the hidden area_prompt_slots widget):
+//   { active: 0-5, slots: [{pos, neg} × 6] }
+// area_text_positive/negative stay the encode source of truth; the slots
+// are a UI-level store the active slot mirrors into / out of.
+
+const _ANGELO_NUM_SLOTS = 6;
+
+function _angeloDefaultSlots() {
+    return {
+        active: 0,
+        slots: Array.from({ length: _ANGELO_NUM_SLOTS }, () => ({ pos: "", neg: "" })),
+    };
+}
+
+function _angeloLoadSlots(node) {
+    const w = findWidget(node, "area_prompt_slots");
+    let data = null;
+    try { data = JSON.parse(String(w?.value || "")); } catch (e) { /* fresh */ }
+    if (!data || !Array.isArray(data.slots) || data.slots.length !== _ANGELO_NUM_SLOTS) {
+        data = _angeloDefaultSlots();
+        // Seed slot 1 from whatever the area_text widgets already hold so
+        // upgrading users keep their existing prompt.
+        data.slots[0].pos = String(findWidget(node, "area_text_positive")?.value || "");
+        data.slots[0].neg = String(findWidget(node, "area_text_negative")?.value || "");
+    }
+    data.active = Math.max(0, Math.min(_ANGELO_NUM_SLOTS - 1, Number(data.active) || 0));
+    for (let i = 0; i < _ANGELO_NUM_SLOTS; i++) {
+        if (!data.slots[i] || typeof data.slots[i] !== "object") data.slots[i] = { pos: "", neg: "" };
+        data.slots[i].pos = String(data.slots[i].pos || "");
+        data.slots[i].neg = String(data.slots[i].neg || "");
+    }
+    return data;
+}
+
+function _angeloSaveSlots(node, data) {
+    const w = findWidget(node, "area_prompt_slots");
+    if (w) setWidget(w, JSON.stringify(data));
+}
+
+// Stash the current area_text widget values into the active slot.
+function _angeloPersistActiveSlot(node) {
+    const data = _angeloLoadSlots(node);
+    data.slots[data.active].pos = String(findWidget(node, "area_text_positive")?.value || "");
+    data.slots[data.active].neg = String(findWidget(node, "area_text_negative")?.value || "");
+    _angeloSaveSlots(node, data);
+    syncPromptSlotButtons(node);
+}
+
+// Switch the active slot: persist the outgoing slot, load the incoming
+// one into the area_text widgets + textarea, restyle the buttons.
+function selectPromptSlot(node, idx) {
+    const data = _angeloLoadSlots(node);
+    if (idx === data.active) return;
+    data.slots[data.active].pos = String(findWidget(node, "area_text_positive")?.value || "");
+    data.slots[data.active].neg = String(findWidget(node, "area_text_negative")?.value || "");
+    data.active = idx;
+    const slot = data.slots[idx];
+    const wp = findWidget(node, "area_text_positive");
+    const wn = findWidget(node, "area_text_negative");
+    if (wp) setWidget(wp, slot.pos);
+    if (wn) setWidget(wn, slot.neg);
+    _angeloSaveSlots(node, data);
+    syncAreaPromptBox(node);
+    syncPromptSlotButtons(node);
+}
+
+// Active slot = purple (matches the Area Prompt toggle); slots holding
+// text show brighter digits than empty ones so you can see at a glance
+// which presets are loaded.
+function syncPromptSlotButtons(node) {
+    const btns = node._AngeloPromptSlotBtns;
+    if (!btns) return;
+    const data = _angeloLoadSlots(node);
+    btns.forEach((b, i) => {
+        const active = i === data.active;
+        const filled = !!(data.slots[i].pos || data.slots[i].neg);
+        b.style.background = active ? "rgba(95, 50, 130, 0.95)" : "#2a2a2a";
+        b.style.color = active ? "#fff" : (filled ? "#ccc" : "#777");
+        b.style.borderColor = active ? "rgba(180, 140, 220, 0.9)" : "#555";
+    });
 }
 
 function showSmartPhrasingPopup(node) {
@@ -2025,6 +2211,26 @@ function redrawCanvasWithOverlays(node) {
     const canvas = node._AngeloCanvas;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
+
+    // Before/after compare ('\' held): show the BASE image with a badge,
+    // skip every overlay (read-only peek — no rings / strokes / detections).
+    if (node._AngeloCompareHold && node._AngeloSourceImg) {
+        ctx.drawImage(node._AngeloSourceImg, 0, 0, canvas.width, canvas.height);
+        const fs = Math.max(16, Math.round(canvas.width * 0.022));
+        const pad = Math.round(fs * 0.55);
+        ctx.save();
+        ctx.font = `bold ${fs}px Arial, sans-serif`;
+        const label = "BEFORE — release \\ for after";
+        const tw = ctx.measureText(label).width;
+        ctx.fillStyle = "rgba(0, 0, 0, 0.62)";
+        ctx.fillRect(pad, pad, tw + pad * 2, fs + pad * 1.4);
+        ctx.fillStyle = "rgba(255, 220, 80, 0.95)";
+        ctx.textBaseline = "top";
+        ctx.fillText(label, pad * 2, pad * 1.7);
+        ctx.restore();
+        return;
+    }
+
     if (node._AngeloImg) {
         ctx.drawImage(node._AngeloImg, 0, 0);
     } else {
@@ -3201,6 +3407,7 @@ const _TOGGLE_ON_COLORS = {
     green:  { bg: "rgba(30, 120, 80, 0.95)",  border: "rgba(140, 220, 170, 0.9)" },
     purple: { bg: "rgba(95, 50, 130, 0.95)",  border: "rgba(180, 140, 220, 0.9)" },
     teal:   { bg: "rgba(30, 110, 130, 0.95)", border: "rgba(140, 200, 220, 0.9)" },
+    amber:  { bg: "rgba(160, 110, 30, 0.95)", border: "rgba(230, 185, 110, 0.9)" },
 };
 
 function syncPersistentMaskToggle(node) {
@@ -3225,6 +3432,15 @@ function syncAreaPromptToggle(node) {
 
 function syncPaintModeToggle(node) {
     _syncToggle(node._AngeloPaintModeToggle, findWidget(node, "paint_mode")?.value, _TOGGLE_ON_COLORS.teal);
+}
+
+function syncRestoreToggle(node) {
+    // Backend honours restore_mode in Refine only — the Smart modes ignore
+    // it, so display OFF there rather than a stale widget value.
+    const effective = isAnySmartMode(node)
+        ? false
+        : findWidget(node, "restore_mode")?.value;
+    _syncToggle(node._AngeloRestoreToggle, effective, _TOGGLE_ON_COLORS.amber);
 }
 
 function syncFineUpscaleToggle(node) {
@@ -3271,6 +3487,7 @@ function syncSmartInpaintLockedWidgets(node) {
         "_AngeloDenoiseInput",
         "_AngeloFineUpscaleToggle",
         "_AngeloPaintModeToggle",
+        "_AngeloRestoreToggle",
         "_AngeloClickRadiusInput",
         "_AngeloAreaPromptToggle",
         "_AngeloCtxPadInput",
@@ -3292,6 +3509,7 @@ function syncSmartInpaintLockedWidgets(node) {
     syncFineUpscaleToggle(node);
     syncAreaPromptToggle(node);
     syncPersistentMaskToggle(node);
+    syncRestoreToggle(node);
     syncAreaPromptVisibility(node);
     // Detect row hides in Smart Guided (no mask), shows in Refine/Smart Inpaint.
     syncDetectControls(node);
@@ -3532,6 +3750,8 @@ function syncAllToolbarControls(node) {
     syncPersistentMaskToggle(node);
     syncAreaPromptToggle(node);
     syncPaintModeToggle(node);
+    syncRestoreToggle(node);
+    syncPromptSlotButtons(node);
     syncFineUpscaleToggle(node);
     syncClickRadiusInput(node);
     syncFeatherInput(node);
@@ -3679,6 +3899,10 @@ function hideMechanicalWidgets(node) {
         "reroll_seq",
         // Redo button — bumps to restore an edit that Undo removed
         "redo_seq",
+        // Restore brush — driven by the Restore toggle on the toolbar
+        "restore_mode",
+        // Prompt slots — JSON state for the Area Prompt slot strip
+        "area_prompt_slots",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",
