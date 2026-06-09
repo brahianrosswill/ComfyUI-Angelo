@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-angelo"
-version = "1.6.4"
+version = "1.7.0"
 description = "Click-to-refine sampler for ComfyUI. Generate an image, then click or paint regions to refine just those areas — first-class support for FLUX 2 Klein 9B and Qwen-Image-Edit, plus any sampler-compatible model. Includes Xtra-Fine, Smart Inpaint, Smart Guided Inpaint, Re-roll, optional SAM 3 Detect, and a companion Overrides node for custom samplers."
 license = { text = "MIT" }
 readme = "README.md"
