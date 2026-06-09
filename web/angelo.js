@@ -92,6 +92,14 @@ function installKeyboardShortcuts() {
         const node = _AngeloHoveredNode;
         if (!node) return;
 
+        // Esc closes the Vary chooser first (keeps the current result),
+        // before falling through to detect-mode dismissal.
+        if (event.key === "Escape" && isVaryChooserOpen(node)) {
+            hideVaryChooser(node);
+            event.preventDefault();
+            return;
+        }
+
         // Esc dismisses pending detection candidates (even from an input,
         // so it works right after typing a concept + Detect).
         if (event.key === "Escape" && node._AngeloDetections && node._AngeloDetections.length) {
@@ -416,6 +424,20 @@ app.registerExtension({
             } else if (lastMode === "Edit Mode") {
                 applyAfterGenControl(this, "seed", "seed_control");
             }
+
+            // Vary ×4: candidate previews arrived → open the chooser.
+            const varyRefs = message?.Angelo_vary_previews;
+            if (varyRefs && varyRefs.length) {
+                showVaryChooser(this, varyRefs);
+            }
+
+            // Fix All: this run has landed — fire the next candidate. The
+            // small delay lets the fresh preview paint (and the green tick
+            // register) before the next confirm queues.
+            if (this._AngeloFixAll) {
+                const node = this;
+                setTimeout(() => _angeloFixAllStep(node), 120);
+            }
         };
 
         // Reset and Undo now live on the DOM toggle bar above the canvas
@@ -527,6 +549,15 @@ function attachPreviewCanvas(node) {
     const rerollBtn = makeActionButton("Re-roll", () => triggerReroll(node), "reroll");
     rerollBtn.title = "Try the most recent edit again with a fresh seed — SAME mask, SAME starting image. Each press replaces the last attempt with a new variation (it doesn't stack on top). Make an edit first, then Re-roll to cycle seeds without re-painting or resetting. Works for clicks, brush strokes, rectangles and detected masks.";
     row1.appendChild(rerollBtn);
+
+    const varyBtn = makeActionButton("Vary ×4", () => triggerVary(node), "vary");
+    varyBtn.title = "Generate FOUR variations of the most recent edit at once — same mask, same "
+        + "starting image, four different seeds — then pick your favourite from a chooser overlay. "
+        + "Re-roll with four dice instead of one. The chosen variation replaces the last attempt "
+        + "(✕ on the chooser keeps the current one); nothing commits until you pick. Make an edit "
+        + "first. Not available while Restore is ON (restores are deterministic).";
+    row1.appendChild(varyBtn);
+    node._AngeloVaryBtn = varyBtn;
 
     row1.appendChild(makeSeparator());
 
@@ -898,11 +929,36 @@ function attachPreviewCanvas(node) {
     brushHint.title = "In Refine, hold Shift and drag on the preview to grow the mask you start over, "
         + "or Alt-drag to carve it back (holes allowed). Brush size = Click R. Then click the candidate to apply.";
 
+    // Fix All — automatically work through every remaining candidate.
+    // Confirms one, waits for its run to land (onExecuted), confirms the
+    // next; the green edited-tracking shows progress on the canvas while
+    // the button doubles as a Stop control with a live count.
+    const fixAllBtn = document.createElement("button");
+    fixAllBtn.type = "button";
+    fixAllBtn.textContent = "⚡ Fix All";
+    fixAllBtn.title = "Automatically edit every remaining (non-green) candidate in turn with the "
+        + "current settings — Area Prompt, Xtra-Fine, seed control, all apply per candidate. "
+        + "Each one is a separate history entry, so individual Undo still works. "
+        + "Click again to stop after the in-flight candidate.";
+    fixAllBtn.style.cssText = "font-size:11px; font-weight:bold; padding:3px 10px; "
+        + "border:1px solid #4a7; border-radius:3px; background:rgba(30,120,80,0.95); "
+        + "color:#fff; cursor:pointer;";
+    for (const ev of ["pointerdown", "mousedown"]) {
+        fixAllBtn.addEventListener(ev, (e) => e.stopPropagation());
+    }
+    fixAllBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleFixAll(node);
+    });
+
     detectPanel.appendChild(cancelDetectBtn);
+    detectPanel.appendChild(fixAllBtn);
     detectPanel.appendChild(opRow);
     detectPanel.appendChild(brushHint);
     modeRow.appendChild(detectPanel);
     node._AngeloCancelDetectBtn = cancelDetectBtn;
+    node._AngeloFixAllBtn = fixAllBtn;
     node._AngeloDetectPanel = detectPanel;
     node._AngeloDetOpacitySlider = opSlider;
 
@@ -1147,6 +1203,47 @@ function attachPreviewCanvas(node) {
     canvasWrap.appendChild(loading);
     node._AngeloLoading = loading;
     node._AngeloLoadingText = loadingText;
+
+    // Vary ×4 chooser — a 2×2 grid of candidate previews over the canvas.
+    // Click one to commit it (replaces the last attempt); ✕ or Esc keeps
+    // the current result. Populated by showVaryChooser when a vary run's
+    // Angelo_vary_previews message arrives.
+    const varyOverlay = document.createElement("div");
+    varyOverlay.style.cssText = "position:absolute; inset:0; z-index:9; display:none; "
+        + "flex-direction:column; gap:6px; padding:8px; background:rgba(0,0,0,0.8);";
+    const varyHeader = document.createElement("div");
+    varyHeader.style.cssText = "display:flex; align-items:center; justify-content:space-between; "
+        + "color:#ddd; font:bold 12px Arial,sans-serif;";
+    const varyTitle = document.createElement("span");
+    varyTitle.textContent = "Pick a variation — click one (✕ keeps the current result)";
+    const varyClose = document.createElement("button");
+    varyClose.type = "button";
+    varyClose.textContent = "✕";
+    varyClose.title = "Close without picking — keeps the current result";
+    varyClose.style.cssText = "background:transparent; border:1px solid #666; border-radius:3px; "
+        + "color:#fff; font-size:13px; line-height:1; padding:3px 8px; cursor:pointer;";
+    for (const ev of ["pointerdown", "mousedown"]) {
+        varyClose.addEventListener(ev, (e) => e.stopPropagation());
+    }
+    varyClose.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        hideVaryChooser(node);
+    });
+    varyHeader.appendChild(varyTitle);
+    varyHeader.appendChild(varyClose);
+    const varyGrid = document.createElement("div");
+    varyGrid.style.cssText = "flex:1 1 auto; min-height:0; display:grid; "
+        + "grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; gap:6px;";
+    varyOverlay.appendChild(varyHeader);
+    varyOverlay.appendChild(varyGrid);
+    // Swallow canvas-bound pointer events so a chooser click can't paint.
+    for (const ev of ["pointerdown", "mousedown", "click", "wheel"]) {
+        varyOverlay.addEventListener(ev, (e) => e.stopPropagation());
+    }
+    canvasWrap.appendChild(varyOverlay);
+    node._AngeloVaryOverlay = varyOverlay;
+    node._AngeloVaryGrid = varyGrid;
 
     // Per-node view state (zoom/pan). zoom 1 = fit; pan in CSS px.
     node._AngeloZoom = 1;
@@ -2659,8 +2756,79 @@ async function runDetect(node, conceptOverride) {
     }
 }
 
+// ===== Fix All — sequential auto-edit of every remaining candidate =====
+// State: node._AngeloFixAll = { queue: [det indices], total }. The loop is
+// event-driven: confirmDetection queues a run; when that run's onExecuted
+// arrives, _angeloFixAllStep fires the next candidate. Stopping (button,
+// Cancel Detect, Esc) clears the state — the in-flight candidate still
+// lands, nothing after it fires.
+
+function toggleFixAll(node) {
+    if (node._AngeloFixAll) {
+        _angeloFixAllFinish(node, "stopped");
+        return;
+    }
+    const dets = node._AngeloDetections || [];
+    const edited = node._AngeloEditedDets || new Set();
+    const queue = dets.map((_, i) => i).filter((i) => !edited.has(i));
+    if (!queue.length) {
+        _angeloToast("Nothing left to fix — every candidate is already done");
+        return;
+    }
+    node._AngeloFixAll = { queue, total: queue.length };
+    _angeloFixAllUpdateButton(node);
+    _angeloFixAllStep(node);
+}
+
+function _angeloFixAllStep(node) {
+    const fa = node._AngeloFixAll;
+    if (!fa) return;
+    const dets = node._AngeloDetections;
+    if (!dets || !dets.length || !fa.queue.length) {
+        _angeloFixAllFinish(node, "complete");
+        return;
+    }
+    const idx = fa.queue.shift();
+    const det = dets[idx];
+    if (!det) {
+        _angeloFixAllStep(node);
+        return;
+    }
+    _angeloFixAllUpdateButton(node);
+    confirmDetection(node, det);
+}
+
+function _angeloFixAllUpdateButton(node) {
+    const btn = node._AngeloFixAllBtn;
+    if (!btn) return;
+    const fa = node._AngeloFixAll;
+    if (!fa) {
+        btn.textContent = "⚡ Fix All";
+        btn.style.background = "rgba(30,120,80,0.95)";
+        btn.style.borderColor = "#4a7";
+        return;
+    }
+    const done = fa.total - fa.queue.length;
+    btn.textContent = `■ Stop (${done}/${fa.total})`;
+    btn.style.background = "rgba(150,60,40,0.95)";
+    btn.style.borderColor = "#e96";
+}
+
+function _angeloFixAllFinish(node, why) {
+    if (!node._AngeloFixAll) return;
+    node._AngeloFixAll = null;
+    _angeloFixAllUpdateButton(node);
+    _angeloToast(why === "complete" ? "Fix All complete ✓" : "Fix All stopped");
+}
+
 function clearDetections(node) {
     if (!node._AngeloDetections) return;
+    // Leaving detect mode aborts a running Fix All (silently — the toast
+    // would be noise when the user explicitly cancelled).
+    if (node._AngeloFixAll) {
+        node._AngeloFixAll = null;
+        _angeloFixAllUpdateButton(node);
+    }
     node._AngeloDetections = null;   // candidate objects (+ their _editMask) drop here
     node._AngeloHoverDet = -1;
     node._AngeloEditedDets = null;
@@ -3267,6 +3435,81 @@ function triggerReroll(node) {
     queuePrompt();
 }
 
+// Vary ×4: like Re-roll, but four candidates at once + a visual pick.
+// Bumps vary_seq with a fresh base seed (Python derives the other three
+// from it); the run stashes candidates server-side and ships previews,
+// which onExecuted hands to showVaryChooser. Nothing commits until
+// triggerVaryPick.
+function triggerVary(node) {
+    const restoreW = findWidget(node, "restore_mode");
+    if (restoreW && restoreW.value && !isAnySmartMode(node)) {
+        _angeloToast("Turn Restore OFF to use Vary — restores are deterministic");
+        return;
+    }
+    const wv = findWidget(node, "vary_seq");
+    if (!wv) return;
+    const wseed = findWidget(node, "seed");
+    if (wseed) {
+        setWidget(wseed, Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
+        syncSeedInput(node);
+    }
+    setWidget(wv, ((wv.value || 0) + 1) & 0x7FFFFFFF);
+    _angeloToast("Generating 4 variations…");
+    dbg("queue vary", { vary_seq: wv.value });
+    queuePrompt();
+}
+
+function showVaryChooser(node, refs) {
+    const ov = node._AngeloVaryOverlay;
+    const grid = node._AngeloVaryGrid;
+    if (!ov || !grid) return;
+    grid.innerHTML = "";
+    refs.forEach((ref, i) => {
+        const cell = document.createElement("div");
+        cell.style.cssText = "position:relative; min-height:0; min-width:0; overflow:hidden; "
+            + "border:2px solid #555; border-radius:4px; background:#111; cursor:pointer;";
+        const img = document.createElement("img");
+        img.src = makeViewUrl(ref);
+        img.style.cssText = "width:100%; height:100%; object-fit:contain; display:block;";
+        img.draggable = false;
+        const tag = document.createElement("span");
+        tag.textContent = String(i + 1);
+        tag.style.cssText = "position:absolute; left:5px; top:5px; padding:1px 7px; "
+            + "background:rgba(0,0,0,0.65); border-radius:3px; color:#ffdc50; "
+            + "font:bold 12px Arial,sans-serif; pointer-events:none;";
+        cell.addEventListener("mouseenter", () => { cell.style.borderColor = "rgba(255,220,80,0.95)"; });
+        cell.addEventListener("mouseleave", () => { cell.style.borderColor = "#555"; });
+        cell.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            hideVaryChooser(node);
+            triggerVaryPick(node, i);
+        });
+        cell.appendChild(img);
+        cell.appendChild(tag);
+        grid.appendChild(cell);
+    });
+    ov.style.display = "flex";
+}
+
+function hideVaryChooser(node) {
+    if (node._AngeloVaryOverlay) node._AngeloVaryOverlay.style.display = "none";
+}
+
+function isVaryChooserOpen(node) {
+    return !!(node._AngeloVaryOverlay && node._AngeloVaryOverlay.style.display !== "none");
+}
+
+function triggerVaryPick(node, idx) {
+    const wp = findWidget(node, "vary_pick");
+    const ws = findWidget(node, "vary_pick_seq");
+    if (!wp || !ws) return;
+    setWidget(wp, idx);
+    setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
+    dbg("queue vary pick", { vary_pick: idx, vary_pick_seq: ws.value });
+    queuePrompt();
+}
+
 function triggerReset(node) {
     const wr = findWidget(node, "reset");
     const ws = findWidget(node, "click_seq");
@@ -3314,6 +3557,7 @@ function makeActionButton(label, onClick, kind = "neutral") {
         undo:    { fg: "#dde7ff", bg: "rgba(50, 60, 70, 0.95)",  border: "rgba(120, 170, 220, 0.9)" },
         redo:    { fg: "#d2f3e2", bg: "rgba(48, 66, 60, 0.95)",  border: "rgba(110, 200, 160, 0.9)" },
         reroll:  { fg: "#ecdcff", bg: "rgba(58, 50, 72, 0.95)",  border: "rgba(170, 130, 220, 0.9)" },
+        vary:    { fg: "#d8eeff", bg: "rgba(40, 62, 82, 0.95)",  border: "rgba(120, 190, 235, 0.9)" },
         neutral: { fg: "#ccc",    bg: "#2a2a2a",                  border: "#555" },
     };
     const th = themes[kind] || themes.neutral;
@@ -3903,6 +4147,8 @@ function hideMechanicalWidgets(node) {
         "restore_mode",
         // Prompt slots — JSON state for the Area Prompt slot strip
         "area_prompt_slots",
+        // Vary ×4 — driven by the Vary button + chooser overlay
+        "vary_seq", "vary_pick", "vary_pick_seq",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",

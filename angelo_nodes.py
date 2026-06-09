@@ -1246,6 +1246,21 @@ class AngeloRefine:
                 # slot's text into area_text_positive/negative, which remain
                 # the encode source of truth. Declared LAST (see above).
                 "area_prompt_slots": ("STRING", {"default": "", "multiline": False}),
+
+                # Vary ×4: the Vary button bumps vary_seq. run() re-runs the
+                # most recent edit's mask from its PRE-edit base four times
+                # with different seeds, stashes the candidates in state
+                # WITHOUT touching history, and ships one preview ref per
+                # candidate (Angelo_vary_previews) to the JS chooser overlay.
+                # Clicking a candidate sets vary_pick + bumps vary_pick_seq;
+                # run() then swaps the chosen candidate in for the last
+                # attempt — a pure restore, no sampling, mirroring Re-roll's
+                # replace semantics. Cancelling the chooser needs no Python
+                # round-trip (the stash is invalidated by the next edit).
+                # Declared LAST (see redo_seq note).
+                "vary_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
+                "vary_pick": ("INT", {"default": -1, "min": -1, "max": 15}),
+                "vary_pick_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -1340,6 +1355,9 @@ class AngeloRefine:
         redo_seq=0,
         restore_mode=False,
         area_prompt_slots="",
+        vary_seq=0,
+        vary_pick=-1,
+        vary_pick_seq=0,
         latent=None,
         clip=None,
         overrides=None,
@@ -1635,6 +1653,24 @@ class AngeloRefine:
             state["redo_seq"] = redo_seq
             state["click_seq"] = click_seq
 
+        # ===== Vary pick: commit a chosen variation (pure restore) =====
+        # The JS chooser sets vary_pick + bumps vary_pick_seq after a Vary
+        # run stashed candidates. Swap the chosen candidate in for the last
+        # attempt — replace, not stack, exactly like Re-roll — and clear the
+        # stash. Never samples. Absorbs click_seq for the same queue-hook
+        # reason as Undo/Redo.
+        new_vary_pick = vary_pick_seq > 0 and vary_pick_seq != state.get("vary_pick_seq", -1)
+        if new_vary_pick:
+            state["vary_pick_seq"] = vary_pick_seq
+            cands = state.get("vary_candidates")
+            if cands and 0 <= int(vary_pick) < len(cands):
+                state["history"][-1] = cands[int(vary_pick)]
+                # Picking a variation is a real edit decision — the redo
+                # branch (which predates it) no longer applies.
+                state["redo_stack"] = []
+            state["vary_candidates"] = None
+            state["click_seq"] = click_seq
+
         # ===== Re-roll: redo the most recent edit with a fresh seed =====
         # The Re-roll button bumps reroll_seq (and sets a new seed) without
         # touching the mask widgets. Re-run the SAME mask on the SAME pre-
@@ -1649,6 +1685,21 @@ class AngeloRefine:
         if reroll_now:
             state["history"].pop()
         state["reroll_seq"] = reroll_seq
+
+        # ===== Vary ×4 gate =====
+        # Re-run the most recent edit's mask from its PRE-edit base, four
+        # times, WITHOUT touching history — candidates are stashed and the
+        # user commits one via the chooser (vary_pick above). Needs a prior
+        # edit (history > 1). Excluded when the Restore brush is active
+        # (restores are deterministic — four identical candidates would be
+        # noise); the JS blocks that combination too.
+        new_vary = vary_seq > 0 and vary_seq != state.get("vary_seq", -1)
+        vary_now = (
+            new_vary
+            and len(state["history"]) > 1
+            and not (bool(restore_mode) and inpainting_mode == "Refine")
+        )
+        state["vary_seq"] = vary_seq
 
         hist_last = state["history"][-1]
         if isinstance(hist_last, tuple):
@@ -1676,9 +1727,21 @@ class AngeloRefine:
         # PRE-edit base — re-running from here gives a fresh variation on the
         # ORIGINAL image, swapped in for the last attempt instead of stacked.
 
-        if new_click or reroll_now:
+        if new_click or reroll_now or vary_now:
             # A re-roll re-runs the same mask widgets from the popped pre-
             # edit base (current), so it flows through this same block.
+            #
+            # Vary ×4 also re-runs the same mask widgets, but from the
+            # UN-popped pre-edit base: history stays intact (the last
+            # attempt remains history[-1]) and only the sampling source is
+            # redirected to history[-2]. Nothing commits until the user
+            # picks a candidate, so cancelling the chooser costs nothing.
+            if vary_now:
+                hist_prev = state["history"][-2]
+                if isinstance(hist_prev, tuple):
+                    current, current_pixels = hist_prev
+                else:
+                    current, current_pixels = hist_prev, None
             # Pixel → latent conversion. The JS sends us the actual image
             # dimensions (image_w, image_h) so we can derive the per-axis
             # scale dynamically rather than hardcoding a VAE downscale
@@ -1852,74 +1915,112 @@ class AngeloRefine:
                     refine_positive, {"reference_latents": [reference_latent]}, append=True,
                 )
 
-            if restore_now:
-                # ===== Restore brush: heal back to the base, no sampling =====
-                # current = mask * base + (1-mask) * current, in latent space.
-                # Outside the (feathered) mask the current latent is kept
-                # bit-exact; inside it the session base is brought back. The
-                # result is pushed as a normal history entry so Undo / Redo /
-                # Re-roll keep working unchanged.
-                src = state.get("source_latent")
-                if src is None:
-                    h0 = state["history"][0]
-                    src = h0[0] if isinstance(h0, tuple) else h0
-                if tuple(src.shape) != tuple(current.shape):
-                    # Shouldn't happen (source_latent resets with every base
-                    # change), but never crash an edit session over it.
-                    print("[Angelo restore] base/current latent shape mismatch "
-                          f"({tuple(src.shape)} vs {tuple(current.shape)}) — restore skipped")
-                    refined = current
+            # One pass normally; four for Vary ×4. The conditioning above is
+            # shared across passes — only the noise seed differs per pass.
+            n_passes = 4 if vary_now else 1
+            pass_results = []
+            for _k in range(n_passes):
+                pass_seed = this_seed if _k == 0 else (
+                    (this_seed + _k * 1000003) & 0xFFFFFFFFFFFFFFFF
+                )
+                if restore_now:
+                    # ===== Restore brush: heal back to the base, no sampling =====
+                    # current = mask * base + (1-mask) * current, in latent space.
+                    # Outside the (feathered) mask the current latent is kept
+                    # bit-exact; inside it the session base is brought back. The
+                    # result is pushed as a normal history entry so Undo / Redo /
+                    # Re-roll keep working unchanged. (vary_now excludes
+                    # restore_now, so n_passes is always 1 here.)
+                    src = state.get("source_latent")
+                    if src is None:
+                        h0 = state["history"][0]
+                        src = h0[0] if isinstance(h0, tuple) else h0
+                    if tuple(src.shape) != tuple(current.shape):
+                        # Shouldn't happen (source_latent resets with every base
+                        # change), but never crash an edit session over it.
+                        print("[Angelo restore] base/current latent shape mismatch "
+                              f"({tuple(src.shape)} vs {tuple(current.shape)}) — restore skipped")
+                        refined = current
+                    else:
+                        src = src.to(device=current.device, dtype=current.dtype)
+                        alpha = mask
+                        while alpha.dim() < current.dim():
+                            alpha = alpha.unsqueeze(0)   # [1,H,W] → [1,1,H,W] (→ [1,1,1,H,W] for 5D)
+                        refined = src * alpha + current * (1.0 - alpha)
+                    refined_pixels = None
+                elif fine_upscaling:
+                    refined, refined_pixels = _refine_with_fine_upscaling(
+                        model=model, vae=vae, current=refine_source, current_pixels=current_pixels, mask=mask,
+                        scale_x=scale_x, scale_y=scale_y,
+                        target_mp=float(min_megapixels),
+                        max_linear=float(max_upscale),
+                        resize_method=str(resize_method),
+                        context_pad_pixel=int(fine_context_pad),
+                        inpainting_mode=str(inpainting_mode),
+                        seed=pass_seed, steps=steps, cfg=cfg,
+                        sampler_name=sampler_name, scheduler=scheduler,
+                        positive=refine_positive, negative=refine_negative,
+                        denoise=denoise, callback=callback, disable_pbar=disable_pbar,
+                        # #8: pass the custom-sampler trio through so the
+                        # internal sample call inside Fine Upscale uses the
+                        # same dispatch logic.
+                        ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
+                    )
                 else:
-                    src = src.to(device=current.device, dtype=current.dtype)
-                    alpha = mask
-                    while alpha.dim() < current.dim():
-                        alpha = alpha.unsqueeze(0)   # [1,H,W] → [1,1,H,W] (→ [1,1,1,H,W] for 5D)
-                    refined = src * alpha + current * (1.0 - alpha)
-                refined_pixels = None
-            elif fine_upscaling:
-                refined, refined_pixels = _refine_with_fine_upscaling(
-                    model=model, vae=vae, current=refine_source, current_pixels=current_pixels, mask=mask,
-                    scale_x=scale_x, scale_y=scale_y,
-                    target_mp=float(min_megapixels),
-                    max_linear=float(max_upscale),
-                    resize_method=str(resize_method),
-                    context_pad_pixel=int(fine_context_pad),
-                    inpainting_mode=str(inpainting_mode),
-                    seed=this_seed, steps=steps, cfg=cfg,
-                    sampler_name=sampler_name, scheduler=scheduler,
-                    positive=refine_positive, negative=refine_negative,
-                    denoise=denoise, callback=callback, disable_pbar=disable_pbar,
-                    # #8: pass the custom-sampler trio through so the
-                    # internal sample call inside Fine Upscale uses the
-                    # same dispatch logic.
-                    ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
-                )
-            else:
-                noise = comfy.sample.prepare_noise(refine_source, this_seed, None)
-                # #8: dispatched via _do_sample, see Sampler Mode note.
-                refined = _do_sample(
-                    guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
-                    model=model, noise=noise,
-                    steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
-                    positive=refine_positive, negative=refine_negative,
-                    source_latent=refine_source,
-                    denoise=denoise,
-                    noise_mask=mask,
-                    callback=callback,
-                    disable_pbar=disable_pbar,
-                    seed=this_seed,
-                )
-                refined_pixels = None
+                    noise = comfy.sample.prepare_noise(refine_source, pass_seed, None)
+                    # #8: dispatched via _do_sample, see Sampler Mode note.
+                    refined = _do_sample(
+                        guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
+                        model=model, noise=noise,
+                        steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
+                        positive=refine_positive, negative=refine_negative,
+                        source_latent=refine_source,
+                        denoise=denoise,
+                        noise_mask=mask,
+                        callback=callback,
+                        disable_pbar=disable_pbar,
+                        seed=pass_seed,
+                    )
+                    refined_pixels = None
+                pass_results.append((refined, refined_pixels))
 
-            state["history"].append((refined, refined_pixels))
-            if len(state["history"]) > _HISTORY_CAP:
-                state["history"] = state["history"][-_HISTORY_CAP:]
-            # A genuine new edit (click or re-roll) invalidates the redo branch.
-            state["redo_stack"] = []
-            state["click_seq"] = click_seq
-            state["refine_seed_at_run"] = int(seed)
-            current = refined
-            current_pixels = refined_pixels
+            if vary_now:
+                # Stash candidates + one preview ref each for the JS chooser.
+                # History is untouched — the node keeps outputting the
+                # existing last attempt until the user picks (vary_pick).
+                state["vary_candidates"] = pass_results
+                vary_refs = []
+                for (lat_k, px_k) in pass_results:
+                    if px_k is not None:
+                        previewer = comfy_nodes.PreviewImage()
+                        ui_k = previewer.save_images(px_k, filename_prefix="Angelo_vary")
+                        vary_refs.append(ui_k["ui"]["images"][0])
+                    else:
+                        _img_k, refs_k = _decode_to_preview(vae, lat_k)
+                        vary_refs.append(refs_k[0])
+                state["vary_preview_refs"] = vary_refs
+                state["click_seq"] = click_seq
+                state["refine_seed_at_run"] = int(seed)
+                # Reload the real last attempt for the node's outputs —
+                # `current` was redirected to history[-2] for sampling.
+                hist_last = state["history"][-1]
+                if isinstance(hist_last, tuple):
+                    current, current_pixels = hist_last
+                else:
+                    current, current_pixels = hist_last, None
+            else:
+                refined, refined_pixels = pass_results[0]
+                state["history"].append((refined, refined_pixels))
+                if len(state["history"]) > _HISTORY_CAP:
+                    state["history"] = state["history"][-_HISTORY_CAP:]
+                # A genuine new edit (click or re-roll) invalidates the redo
+                # branch and any stale Vary stash.
+                state["redo_stack"] = []
+                state["vary_candidates"] = None
+                state["click_seq"] = click_seq
+                state["refine_seed_at_run"] = int(seed)
+                current = refined
+                current_pixels = refined_pixels
 
         out_latent = {"samples": current}
         ui_msg = {
@@ -1961,6 +2062,13 @@ class AngeloRefine:
             src_refs = ui_src["ui"]["images"]
             state["source_preview_refs"] = src_refs
         ui_msg["Angelo_source_preview"] = src_refs
+
+        # Vary ×4: ship the candidate previews exactly once (popped, not
+        # read) — only the run that generated them opens the JS chooser;
+        # later runs must not re-open it.
+        vary_refs_out = state.pop("vary_preview_refs", None)
+        if vary_refs_out:
+            ui_msg["Angelo_vary_previews"] = vary_refs_out
 
         return {"ui": ui_msg, "result": (image, out_latent, source_image)}
 
