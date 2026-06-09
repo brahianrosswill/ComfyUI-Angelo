@@ -641,9 +641,13 @@ def _refine_with_fine_upscaling(
         
     H_pix = cached_pixels.shape[1]
     W_pix = cached_pixels.shape[2]
-    # Pixel-per-latent ratio per axis (16 for FLUX 2, 8 for SDXL/SD1.5)
-    px_per_lat_y = max(1, H_pix // current.shape[-2])
-    px_per_lat_x = max(1, W_pix // current.shape[-1])
+    # Pixel-per-latent ratio per axis (16 for FLUX 2, 8 for SDXL/SD1.5).
+    # round(), not floor-divide: a non-integer true ratio (exotic VAEs)
+    # floor-divided gives e.g. 15 for 15.8, drifting the pixel-space bbox
+    # ~1px against the latent bbox and leaving a seam in the composite.
+    # (#28, from @KursatAs.)
+    px_per_lat_y = max(1, round(H_pix / current.shape[-2]))
+    px_per_lat_x = max(1, round(W_pix / current.shape[-1]))
 
     # Pixel-space bbox derived from the latent-space bbox.
     y0_p = y0 * px_per_lat_y
@@ -1663,8 +1667,15 @@ class AngeloRefine:
                 print("[Angelo] warning: image_w/h not set by JS; "
                       "falling back to 8x VAE assumption — may be wrong for FLUX 2")
 
-            r_latent = max(1.0, click_radius * scale_x)
-            sigma_latent = (feather_radius * scale_x) if feather_radius > 0 else 0.0
+            # Geometric mean of the two axis scales (#28, from @KursatAs):
+            # using scale_x alone maps the on-screen circle to an ellipse in
+            # latent space whenever the axes scale differently (non-/16
+            # image dims), refining a taller/wider region than was painted.
+            # The geometric mean keeps the latent circle area-true on both
+            # portrait and landscape images.
+            scale_geom = math.sqrt(scale_x * scale_y)
+            r_latent = max(1.0, click_radius * scale_geom)
+            sigma_latent = (feather_radius * scale_geom) if feather_radius > 0 else 0.0
 
             # Build the mask. Sources of mask shape, in priority:
             #   1. Smart Guided Inpaint: full-image (no region — the whole
