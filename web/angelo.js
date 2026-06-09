@@ -908,7 +908,7 @@ function attachPreviewCanvas(node) {
     const detectPanel = document.createElement("div");
     detectPanel.style.cssText = "position:absolute; right:6px; top:4px; z-index:6; display:none; "
         + "flex-direction:column; align-items:stretch; gap:4px; padding:5px 6px; "
-        + "background:rgba(20,20,20,0.82); border:1px solid #555; border-radius:5px;";
+        + "background:#000; border:1px solid #555; border-radius:5px;";
 
     const cancelDetectBtn = document.createElement("button");
     cancelDetectBtn.type = "button";
